@@ -1,0 +1,95 @@
+spec:
+  inputs:
+    environment:
+      description: "Target environment for deployment (dev to spark.quantum -> real machine, prod to spark.qtest -> mock)"
+      type: string
+      options: ["dev", "prod"]
+      default: "dev"
+---
+deploy:
+  stage: deploy
+  image: ubuntu:22.04
+  before_script:
+    - ENVIRONMENT="$[[ inputs.environment ]]"
+    - HOST_VAR="${ENVIRONMENT^^}_SPARK_HOST"
+    - DEPLOY_HOST="${!HOST_VAR}"
+    - SSH_KEY_VAR="${ENVIRONMENT^^}_SPARK_SSH_KEY"
+    - DEPLOY_SSH_KEY="${!SSH_KEY_VAR}"
+    - ENV_VAR="${ENVIRONMENT^^}_ENV_CONFIG"
+    - DEPLOY_ENV="${!ENV_VAR}"
+    - 'command -v ssh-agent >/dev/null || ( apt-get update -y && apt-get install -y git openssh-client gettext rsync )'
+    - eval $(ssh-agent -s)
+    - chmod 400 "$DEPLOY_SSH_KEY"
+    - ssh-add "$DEPLOY_SSH_KEY"
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - DEPLOY_DIR=/home/ubuntu/nginx-certbot
+    - TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+    - BACKUP_BASE=/home/ubuntu/nginx-certbot.bak/$TIMESTAMP
+    # Ensure the deploy dir exists and has sane perms, even if a previous
+    # deploy left it world-writable. `mkdir -p` is a no-op on an existing
+    # dir; `chmod 755` normalises it regardless of prior state.
+    - ssh ubuntu@$DEPLOY_HOST "mkdir -p $DEPLOY_DIR $BACKUP_BASE && chmod 755 $DEPLOY_DIR"
+    # Render .env and the per-env nginx vhost files locally before sync.
+    - cp $DEPLOY_ENV .env
+    - bash configure_nginx.sh
+    # Phase 1 — application code and assets.
+    # Excludes everything that is either runtime state on the server (data,
+    # minio-data, SWAG's config/) or local-only build artifacts (.git,
+    # __pycache__, .venv, lint caches). We do NOT pass --delete-excluded:
+    # that flag would also delete excluded paths on the destination, which
+    # is the opposite of "protect runtime state". Legacy files matching a
+    # new exclude pattern can be cleaned up manually with `find`.
+    # Anything deleted by rsync is moved into the backup dir, not unlinked.
+    - >
+      rsync -az --delete
+      --backup --backup-dir=$BACKUP_BASE/main/
+      --exclude='.git/'
+      --exclude='__pycache__/'
+      --exclude='*.pyc'
+      --exclude='.venv/'
+      --exclude='.mypy_cache/'
+      --exclude='.ruff_cache/'
+      --exclude='.pytest_cache/'
+      --exclude='/.env'
+      --exclude='/minio-data/'
+      --exclude='/iqm-releases-mirror/'
+      --exclude='/static/'
+      --exclude='/config/'
+      ./ ubuntu@$DEPLOY_HOST:$DEPLOY_DIR/
+    - ssh ubuntu@$DEPLOY_HOST "chmod 775 $DEPLOY_DIR"
+    # Phase 2 — nginx vhost dir we fully own (templates + envsubst output).
+    # --delete safely cleans up renamed/removed vhost files; the rest of
+    # config/ (etc/, keys/, log/, dns-conf/, .donoteditthisfile.conf,
+    # .migrations) is owned by SWAG and untouched by this rsync.
+    # --mkpath creates the destination dir tree if a fresh host is missing
+    # config/nginx/, since Phase 1 excludes the whole config/.
+    - >
+      rsync -az --delete --mkpath
+      --backup --backup-dir=$BACKUP_BASE/config-nginx-site-confs/
+      config/nginx/site-confs/
+      ubuntu@$DEPLOY_HOST:$DEPLOY_DIR/config/nginx/site-confs/
+    # Phase 3 — single tracked files that share their parent dir with
+    # SWAG runtime state. No --delete here: we only refresh the file we own.
+    # --mkpath ensures the parent dir exists on first deploy.
+    - rsync -az --mkpath config/fail2ban/jail.local ubuntu@$DEPLOY_HOST:$DEPLOY_DIR/config/fail2ban/jail.local
+    - rsync -az --mkpath config/php/www2.conf ubuntu@$DEPLOY_HOST:$DEPLOY_DIR/config/php/www2.conf
+    # Always rewrite .env from the CI variable.
+    - scp .env ubuntu@$DEPLOY_HOST:$DEPLOY_DIR/.env
+    # Bring the stack back up against the freshly-mirrored tree.
+    - >
+      ssh ubuntu@$DEPLOY_HOST
+      "cd $DEPLOY_DIR &&
+       docker compose down &&
+       COMPOSE_PROFILES=${ENVIRONMENT} docker compose up --build -d --remove-orphans"
+    # Report the backup location so it shows up in the job log.
+    - echo "Pre-deploy snapshot of changed/deleted files at $BACKUP_BASE on $DEPLOY_HOST"
+  environment:
+    name: $[[ inputs.environment ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - when: never

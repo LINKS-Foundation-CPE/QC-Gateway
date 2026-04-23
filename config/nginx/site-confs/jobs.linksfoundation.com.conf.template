@@ -1,0 +1,15 @@
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name jobs.${BASE_DOMAIN};
+
+    include /config/nginx/ssl.conf;
+
+    root /jobs-portal;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -1,0 +1,29 @@
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name rng.${BASE_DOMAIN};
+
+    include /config/nginx/ssl.conf;
+
+    # Trust only the loopback proxy — prevents X-Forwarded-For spoofing
+    # by clients sending fake headers directly.
+    set_real_ip_from 10.0.0.0/8;
+    set_real_ip_from ::1;
+    real_ip_header   X-Forwarded-For;
+    real_ip_recursive on;
+
+    # Common proxy headers
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # --- Static + redirects ---
+    
+    location / {
+        include /config/nginx/proxy.conf;
+        proxy_pass http://127.0.0.1:8005;
+    }
+
+}

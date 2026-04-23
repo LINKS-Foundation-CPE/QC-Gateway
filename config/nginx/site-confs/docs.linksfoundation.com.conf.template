@@ -1,0 +1,16 @@
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name docs.${BASE_DOMAIN};
+
+    include /config/nginx/ssl.conf;
+
+    location / {
+        return 301 https://pages.linksfoundation.com/links-iqm-spark/docs/;
+    }
+
+    location /private {
+        return 301 https://pages.linksfoundation.com/links-iqm-spark/private-docs;
+    }
+}

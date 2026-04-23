@@ -1,0 +1,235 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "30"
+
+services:
+  reporter:
+    build: .
+    image: fastapi-middleware:latest
+    container_name: job-reporter
+    command: ["python", "-u", "-m", "middleware.job_reporter"]
+    environment:
+      - TZ=Europe/Rome
+      - VENDOR_PLUGIN=iqm
+      - SITE_PLUGIN=spark
+      - POSTGRES_DB=jobproxy
+      - POSTGRES_USER=jobproxy
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - PORTAL_API_HOST=http://host.docker.internal:8500
+      # Parametri runtime del reporter
+      - JOB_REPORTER_INTERVAL=10
+      - JOB_REPORTER_HTTP_TIMEOUT=30
+      - JOB_REPORTER_VERIFY_TLS=false
+      - JOB_REPORTER_MAX_ERRORS=50
+      - JOB_REPORTER_BACKOFF_FACTOR=2.0
+      - JOB_REPORTER_MAX_BACKOFF=300
+      # Redis config
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging: *default-logging
+    labels:
+      - "loki.job=job-reporter"
+
+  swag:
+    image: lscr.io/linuxserver/swag:4.2.0
+    container_name: nginx-certbot
+    cap_add:
+      - NET_ADMIN
+    network_mode: host
+    environment:
+      - TZ=Europe/Rome
+      - PUID=1000
+      - PGID=1000
+      - VALIDATION=http
+    env_file:
+      - .env
+    volumes:
+      - ./config:/config
+      - ../quantum-dashboard/dashboard:/dashboard:ro
+      - ./middleware/vendors/iqm/jobs-portal:/jobs-portal:ro
+    # ports:
+    #   - 0.0.0.0:443:443
+    #   - 0.0.0.0:80:80
+    restart: unless-stopped
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    logging: *default-logging
+    labels:
+      - "loki.job=nginx-certbot"
+
+  fastapi-proxy:
+    build: .
+    image: fastapi-middleware:latest
+    container_name: fastapi-middleware
+    environment:
+      - TZ=Europe/Rome
+      - VENDOR_PLUGIN=iqm
+      - SITE_PLUGIN=spark
+      - KEYCLOAK_ISSUER=${AUTH_URL}/realms/cortex
+      - KEYCLOAK_JWKS_URL=${AUTH_URL}/realms/cortex/protocol/openid-connect/certs
+      - AUDIENCE=account
+      - LOG_LEVEL=INFO
+      - POSTGRES_DB=jobproxy
+      - POSTGRES_USER=jobproxy
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - PORTAL_API_HOST=http://host.docker.internal:8500
+      - MIDDLEWARE_MODE=${MIDDLEWARE_MODE}  # Can be production, authentication, or maintenance
+      # Redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      # Limit per-user concurrent shots
+      - MAX_CONCURRENT_SHOTS=2500000
+    env_file:
+      - .env
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging: *default-logging
+    labels:
+      - "loki.job=fastapi-proxy"
+
+  postgres:
+    image: postgres:17
+    container_name: jobs-local-db
+    restart: always
+    environment:
+      TZ: Europe/Rome
+      POSTGRES_DB: jobproxy
+      POSTGRES_USER: jobproxy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobproxy -d jobproxy"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+    labels:
+      - "loki.job=job-reporter-postgres"
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    container_name: minio-job-data
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      - TZ=Europe/Rome
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - ${MINIO_STORAGE_PATH}/data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 20s
+      timeout: 20s
+      retries: 3
+    labels:
+      - "loki.job=minio-job-data"
+    logging: *default-logging
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    container_name: minio-init
+    environment:
+      - TZ=Europe/Rome
+    env_file:
+      - .env
+    volumes:
+      - ./minio-init:/scripts
+    entrypoint: /bin/sh
+    command: /scripts/bootstrap.sh
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: jobs-redis
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    environment:
+      - TZ=Europe/Rome
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "loki.job=redis"
+
+  restic:
+    image: ghcr.io/lobaro/restic-backup-docker:v1.4.0
+    container_name: restic-minio
+    restart: always
+    privileged: true
+    volumes:
+      - ${MINIO_STORAGE_PATH}/data:/data/Backup:ro
+      - ${MINIO_STORAGE_PATH}/restore:/restore
+    environment:
+      - TZ=Europe/Rome
+      - RESTIC_REPOSITORY=s3:https://${BACKUP_ENDPOINT}/spark-job-store
+      - BACKUP_CRON=0 1 * * *
+      - RESTIC_INIT_ARGS=--insecure-tls --insecure-no-password
+      - RESTIC_JOB_ARGS=--insecure-tls --insecure-no-password
+      - RESTIC_DATA_SUBSET=2G                            
+      - RESTIC_FORGET_ARGS=--prune --keep-last 7 --insecure-tls --insecure-no-password
+    env_file:
+      - .env
+    labels:
+      - "loki.job=restic-minio"
+
+  volumes-backup:
+    image: offen/docker-volume-backup:v2.43.3
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - TZ=Europe/Rome
+      - BACKUP_CRON_EXPRESSION=0 3 * * *
+      - BACKUP_FILENAME=spark_jobs_db-%Y-%m-%dT%H-%M-%S.{{ .Extension }}
+      - AWS_S3_BUCKET_NAME=jobs-db-backup
+      - AWS_ENDPOINT=${BACKUP_ENDPOINT}
+      - AWS_ENDPOINT_PROTO=https
+      - AWS_ENDPOINT_INSECURE=true
+      - BACKUP_RETENTION_DAYS=30
+    volumes:
+      - postgres_data:/backup/postgres_data:ro
+
+
+volumes:
+  postgres_data:
+  redis_data:
