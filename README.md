@@ -166,34 +166,3 @@ European Commission. It is compatible with GPL (v2 and v3), LGPL, AGPL,
 MPL, CeCILL, and several other major licences through the EUPL
 compatibility list, so code from those licences can be combined with
 QC Gateway without licence conflicts.
-
-### What this means in practice
-
-- **Running QC Gateway, as-is or modified, inside your own infrastructure
-  for your own users** — no disclosure obligations. EUPL does not close
-  the SaaS / internal-use carve-out, so institutional deployments of the
-  gateway for your own operators and end users are unencumbered.
-- **Distributing a modified version** — for example, forking the code
-  and shipping it as a product — your modifications must be released
-  under the EUPL or a compatible licence, and the source must be made
-  available to the downstream recipient.
-- **Third-party plugins** run in the same Python process as the core and
-  are, when distributed together with the gateway, derivative works. A
-  bundled distribution (plugin + gateway) must therefore be released
-  under the EUPL. A plugin you develop and deploy on your own
-  infrastructure without redistribution triggers no obligation, so
-  proprietary in-house plugins remain entirely possible.
-
-### Why EUPL
-
-EUPL strikes the balance appropriate for a publicly-funded project
-serving quantum computing operators: it protects the gateway from
-proprietary closed-source forks, while leaving internal deployments and
-in-house plugins unencumbered — the principal intended use case. It
-also fits the project's European public-sector funding context, being
-the European Commission's recommended licence for such software, and
-its compatibility list covers every major copyleft licence a downstream
-project is likely to use.
-
-Nothing in this section is legal advice — consult the full
-[LICENSE](LICENSE) text, and your own counsel, for any concrete case.
