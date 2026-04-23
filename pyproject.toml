@@ -1,0 +1,78 @@
+[project]
+name = "qc-gateway"
+version = "2026.04.0"
+description = "Vendor- and site-agnostic authenticating reverse proxy for quantum computer HTTP APIs."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "EUPL-1.2"
+license-files = ["LICENSE"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    "config",
+    "data",
+    "minio-data",
+    "iqm-releases-mirror",
+    "openapi-docs",
+    "static",
+    "middleware/vendors/iqm/jobs-portal",
+]
+
+[tool.ruff.lint]
+# Rule selection: pyflakes, pycodestyle, isort, bugbear, comprehensions,
+# pyupgrade, simplify, and a few quality-of-life rule sets.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "N",    # pep8-naming
+    "PL",   # pylint subset
+]
+ignore = [
+    "E501",    # line length is enforced by the formatter
+    "PLR0913", # too many arguments — common in plugin constructors
+    "PLR2004", # magic values — fine in tests and small helpers
+    "SIM105",  # contextlib.suppress is not always clearer than try/except/pass
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]           # package re-exports
+
+[tool.ruff.lint.isort]
+known-first-party = ["middleware"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["middleware"]
+exclude = [
+    "config",
+    "data",
+    "minio-data",
+    "iqm-releases-mirror",
+]
+# Start permissive so the codebase can be onboarded incrementally.
+# Tighten these over time.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+no_implicit_optional = true
+# Plugin interfaces rely on typing.Protocol — keep structural checks strict there.
+
+[[tool.mypy.overrides]]
+module = "middleware.plugins.*"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true

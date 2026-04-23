@@ -1,0 +1,18 @@
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name prometheus.${BASE_DOMAIN};
+
+    include /config/nginx/ssl.conf;
+
+    client_max_body_size 0;
+
+    location / {
+        include /config/nginx/proxy.conf;
+        include /config/nginx/resolver.conf;
+        proxy_pass http://127.0.0.1:9091;
+
+    }
+
+}

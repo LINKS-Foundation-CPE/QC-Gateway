@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quantum Job Results</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #ffffff;
+  --surface:      #f8f9fa;
+  --surface2:     #ffffff;
+  --border:       #e9ecef;
+  --border-soft:  #f1f3f5;
+  --text:         #212529;
+  --text-dim:     #6c757d;
+  --text-faint:   #adb5bd;
+  --blue:         #0066cc;
+  --blue-soft:    rgba(0,102,204,.12);
+  --green:        #28a745;
+  --green-soft:   rgba(40,167,69,.1);
+  --amber:        #ffc107;
+  --red:          #dc3545;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', 'Courier New', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* accent line */
+body::before {
+  content: '';
+  display: block;
+  height: 2px;
+  background: linear-gradient(90deg,
+    transparent 0%, var(--blue) 25%,
+    var(--green) 75%, transparent 100%);
+  opacity: .65;
+}
+
+.page {
+  max-width: 1060px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+/* ── HEADER ──────────────────────────────── */
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.logo { width: 34px; height: 34px; flex-shrink: 0; }
+.logo svg { width: 100%; height: 100%; }
+.header-title {
+  font-size: 17px; font-weight: 600;
+  color: var(--text); letter-spacing: -.01em; line-height: 1.2;
+}
+.header-sub {
+  font-family: var(--mono); font-size: 12.5px;
+  color: var(--text-dim); margin-top: 3px; letter-spacing: .02em;
+}
+.header-url {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--text-dim); margin-top: 2px; letter-spacing: .01em;
+  word-break: break-all;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.header-url-label {
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+.header-url a {
+  color: var(--blue);
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.header-url a:hover {
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-color: var(--blue);
+  text-decoration: none;
+  opacity: 1;
+}
+.header-right { display: flex; align-items: center; gap: 8px; padding-top: 2px; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 3px;
+  font-family: var(--mono); font-size: 12.5px;
+  font-weight: 500; letter-spacing: .04em; white-space: nowrap;
+}
+.chip-green {
+  background: var(--green-soft);
+  border: 1px solid rgba(56,168,108,.22);
+  color: var(--green);
+}
+.chip-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor;
+  animation: pulse 2.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+/* ── SUMMARY ─────────────────────────────── */
+.summary {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 24px;
+  background: var(--surface);
+}
+@media(max-width:680px){ .summary { grid-template-columns: repeat(3,1fr); } }
+@media(max-width:400px){ .summary { grid-template-columns: repeat(2,1fr); } }
+
+.s-cell {
+  padding: 14px 18px;
+  border-right: 1px solid var(--border);
+}
+.s-cell:last-child { border-right: none; }
+.s-label {
+  font-family: var(--mono); font-size: 10.5px;
+  color: var(--text-dim); letter-spacing: .09em;
+  text-transform: uppercase; margin-bottom: 5px;
+}
+.s-value {
+  font-family: var(--mono); font-size: 20px;
+  font-weight: 500; color: var(--text); line-height: 1.1;
+}
+.s-value.sm { font-size: 13px; line-height: 1.4; padding-top: 2px; }
+
+/* ── CARDS ───────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden;
+  margin-bottom: 16px;
+  animation: rise .35s ease both;
+}
+.card:nth-child(1){animation-delay:.05s}
+.card:nth-child(2){animation-delay:.10s}
+.card:nth-child(3){animation-delay:.15s}
+.card:nth-child(4){animation-delay:.20s}
+@keyframes rise {
+  from { opacity:0; transform:translateY(8px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+
+.card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 18px; background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+}
+.card-label {
+  font-family: var(--mono); font-size: 12.5px; font-weight: 500;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim);
+}
+.card-body { padding: 20px 22px; }
+
+/* ── CIRCUIT ─────────────────────────────── */
+.circuit-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
+.ctab {
+  padding: 3px 11px; font-family: var(--mono); font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: transparent; color: var(--text-dim);
+  cursor: pointer; transition: all .15s;
+}
+.ctab:hover, .ctab.active {
+  border-color: var(--blue); color: var(--blue); background: var(--blue-soft);
+}
+.circuit-scroll { overflow-x: auto; }
+.circuit-scroll svg { display: block; }
+.circ-panels { }
+.circ-panel { }
+.circ-panel.hidden { display: none; }
+.circ-hist-sep {
+  height: 1px; background: var(--border);
+  margin: 20px 0;
+}
+.circ-hist-wrap { }
+
+/* ── HISTOGRAM ───────────────────────────── */
+.hist-info {
+  font-family: var(--mono); font-size: 12.5px;
+  color: var(--text-dim); margin-bottom: 16px;
+}
+.histogram { display: flex; align-items: flex-end; gap: 10px; height: 185px; }
+.bar-col {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: flex-end; flex: 1; height: 100%; min-width: 28px;
+}
+.bar-count { font-family: var(--mono); font-size: 12px; color: var(--blue); margin-bottom: 4px; }
+.bar-rect {
+  width: 100%; border-radius: 2px 2px 0 0;
+  background: var(--blue); opacity: .72;
+  min-height: 3px; cursor: default; transition: opacity .15s;
+}
+.bar-rect:hover { opacity: 1; }
+.bar-state { font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-top: 7px; text-align: center; word-break: break-all; }
+.bar-pct   { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+
+/* ── TIMELINE ────────────────────────────── */
+.tl { position: relative; padding-left: 20px; }
+.tl::before {
+  content: ''; position: absolute;
+  left: 5px; top: 10px; bottom: 10px;
+  width: 1px; background: var(--border);
+}
+.tl-row {
+  position: relative;
+  display: grid; grid-template-columns: 1fr auto; gap: 12px;
+  align-items: center; padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.tl-row:last-child { border-bottom: none; }
+.tl-dot {
+  position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--border); border: 1.5px solid var(--bg);
+}
+.tl-dot.active { background: var(--blue); }
+.tl-dot.done   { background: var(--green); }
+.tl-status {
+  font-size: 14px; font-weight: 500; color: var(--text);
+  line-height: 1.2; text-transform: capitalize;
+}
+.tl-source { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); margin-top: 1px; }
+.tl-right  { text-align: right; white-space: nowrap; }
+.tl-time   { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); }
+.tl-delta  { font-family: var(--mono); font-size: 11px; color: var(--green); margin-top: 1px; }
+.tl-footer {
+  font-family: var(--mono); font-size: 12.5px; color: var(--text-dim);
+  text-align: right; margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.tl-footer-value { color: var(--text); font-weight: 500; margin-left: 6px; }
+
+/* ── CAL METRICS ─────────────────────────── */
+.cal-group-title {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-dim);
+  padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  margin-bottom: 12px; margin-top: 22px;
+}
+.cal-group-title:first-child { margin-top: 0; }
+.cal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px,1fr)); gap: 10px; }
+.cal-tile {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 11px 14px;
+}
+.cal-tile-label {
+  font-family: var(--mono); font-size: 10.5px;
+  color: var(--text-dim); margin-bottom: 7px; line-height: 1.4;
+}
+.cal-tile-value {
+  font-family: var(--mono); font-size: 22px;
+  font-weight: 500; line-height: 1; color: var(--text);
+}
+.cal-tile-value .unit { font-size: 12px; font-weight: 400; color: var(--text-dim); margin-left: 1px; }
+.cal-tile-value.hi { color: var(--green); }
+.cal-tile-value.md { color: var(--amber); }
+.cal-tile-value.lo { color: var(--red); }
+.cal-bar { height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; margin-top: 9px; }
+.cal-bar-fill { height: 100%; border-radius: 1px; background: var(--blue); opacity: .55; }
+
+/* ── STATES ──────────────────────────────── */
+.state {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; padding: 28px 0;
+  font-family: var(--mono); font-size: 12.5px; color: var(--text-dim);
+}
+.state.err { color: var(--red); }
+.spin {
+  width: 13px; height: 13px;
+  border: 2px solid var(--border); border-top-color: var(--blue);
+  border-radius: 50%; animation: spin .65s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <div class="header-left">
+      <div>
+        <div class="header-title">Quantum Job Results</div>
+        <div class="header-sub" id="hdr-meta">—</div>
+        <div class="header-url">
+          <span class="header-url-label">JSON Artifacts:</span>
+          <a href="#" target="_blank" id="hdr-url-link">—</a>
+        </div>
+      </div>
+    </div>
+    <div class="header-right">
+      <span class="chip chip-green">
+        <span class="chip-dot"></span>
+        <span id="hdr-status">Loading…</span>
+      </span>
+    </div>
+  </header>
+
+  <div class="summary" id="summary">
+    <div class="state"><div class="spin"></div>Fetching artifacts…</div>
+  </div>
+
+  <div id="cards"></div>
+
+</div>
+
+<script>
+(function() {
+'use strict';
+
+/* ── URL resolution ──────────────────────────── */
+function getBase() {
+  const p = new URLSearchParams(location.search);
+  if (p.has('job')) return p.get('job').replace(/\/$/, '');
+  return location.href.split('?')[0].replace(/\/[^/]*$/, '');
+}
+
+const BASE  = getBase();
+const segs  = BASE.replace(/^https?:\/\/[^/]+/, '').split('/').filter(Boolean);
+const JOB   = segs[segs.length - 1] || '—';
+const EMAIL = segs[segs.length - 2] || '—';
+
+// Display original URL with /index.html if it exists
+const originalUrl = location.href.split('job=')[1] + '/index.html';
+document.getElementById('hdr-meta').textContent = EMAIL + '  ·  ' + JOB;
+const urlLinkElement = document.getElementById('hdr-url-link');
+if (urlLinkElement) {
+  urlLinkElement.textContent = originalUrl;
+  urlLinkElement.href = originalUrl;
+}
+document.title = 'Job ' + JOB.slice(0, 8) + '… · QResults';
+
+/* ── fetch ───────────────────────────────────── */
+async function load(name) {
+  const r = await fetch(BASE + '/' + name);
+  if (!r.ok) throw new Error(name + ' → HTTP ' + r.status);
+  return r.json();
+}
+
+function ok(r) { return r.status === 'fulfilled' ? r.value : null; }
+
+/* ── boot ────────────────────────────────────── */
+async function boot() {
+  const [tlR, cntR, plR, calR] = await Promise.allSettled([
+    load('timeline.json'),
+    load('measurement_counts.json'),
+    load('payload.json'),
+    load('calibration_metrics.json'),
+  ]);
+
+  const tl  = ok(tlR);
+  const cnt = ok(cntR);
+  const pl  = ok(plR);
+  const cal = ok(calR);
+
+  // status badge
+  const last = tl ? tl[tl.length - 1] : null;
+  document.getElementById('hdr-status').textContent =
+    last ? last.status.replace(/_/g, ' ') : 'unknown';
+
+  // summary strip
+  let shots='—', qubits='—', circuits='—', qpuTime='—', submitted='—';
+  if (pl) {
+    shots    = pl.shots ?? '—';
+    circuits = (pl.circuits||[]).length;
+    const qs = new Set();
+    (pl.circuits||[]).forEach(c =>
+      (c.instructions||[]).forEach(i => (i.locus||[]).forEach(q => qs.add(q))));
+    qubits = qs.size;
+  }
+  if (tl && tl.length > 1) {
+    submitted = new Date(tl[0].timestamp).toISOString().replace('T',' ').slice(0,19)+' Z';
+    const execStart = tl.find(e => e.status === 'execution_started');
+    const execEnd   = tl.find(e => e.status === 'execution_ended');
+    if (execStart && execEnd) {
+      qpuTime = (new Date(execEnd.timestamp) - new Date(execStart.timestamp)) + ' ms';
+    }
+  }
+  document.getElementById('summary').innerHTML = `
+    <div class="s-cell"><div class="s-label">Shots</div><div class="s-value">${shots}</div></div>
+    <div class="s-cell"><div class="s-label">Qubits</div><div class="s-value">${qubits}</div></div>
+    <div class="s-cell"><div class="s-label">Circuits</div><div class="s-value">${circuits}</div></div>
+    <div class="s-cell"><div class="s-label">QPU time</div><div class="s-value sm">${qpuTime}</div></div>
+    <div class="s-cell"><div class="s-label">Submitted</div><div class="s-value sm">${submitted}</div></div>`;
+
+  // cards
+  const cards = document.getElementById('cards');
+  cards.innerHTML = '';
+  if (pl || cnt) cards.appendChild(makeCircuitsCard(pl, cnt));
+  if (tl)  cards.appendChild(makeTimelineCard(tl));
+  if (cal) cards.appendChild(makeCalCard(cal));
+}
+
+/* ── combined circuits + histograms card ─────── */
+function makeCircuitsCard(pl, cnt) {
+  const card = cardEl('Circuits & Results');
+  const body = card.querySelector('.card-body');
+  const circs  = (pl && pl.circuits) || [];
+  const groups = cnt || [];
+
+  if (!circs.length && !groups.length) {
+    body.innerHTML = '<div class="state err">No circuit or count data found.</div>';
+    return card;
+  }
+
+  // number of tabs = max of circuits vs measurement groups
+  const nTabs = Math.max(circs.length, groups.length);
+
+  const tabs      = d('circuit-tabs');
+  const panelWrap = d('circ-panels');
+  body.appendChild(tabs);
+  body.appendChild(panelWrap);
+
+  for (let i = 0; i < nTabs; i++) {
+    const circ  = circs[i]  || null;
+    const group = groups[i] || null;
+    const label = circ ? (circ.name || ('Circuit '+(i+1))) : ('Result '+(i+1));
+
+    // tab button
+    const btn = document.createElement('button');
+    btn.className = 'ctab' + (i===0?' active':'');
+    btn.textContent = label;
+
+    // panel
+    const panel = d('circ-panel');
+    panel.className = 'circ-panel' + (i===0?'':' hidden');
+
+    // circuit SVG
+    if (circ) {
+      const scroll = d('circuit-scroll');
+      scroll.innerHTML = circuitSVG(circ);
+      panel.appendChild(scroll);
+    }
+
+    // histogram
+    if (group) {
+      const sep = d('circ-hist-sep');
+      panel.appendChild(sep);
+      panel.appendChild(buildHistogram(group));
+    }
+
+    btn.onclick = () => {
+      tabs.querySelectorAll('.ctab').forEach(b => b.classList.remove('active'));
+      panelWrap.querySelectorAll('.circ-panel').forEach(p => p.classList.add('hidden'));
+      btn.classList.add('active');
+      panel.classList.remove('hidden');
+    };
+
+    tabs.appendChild(btn);
+    panelWrap.appendChild(panel);
+  }
+
+  return card;
+}
+
+/* builds a histogram DOM node for one measurement group */
+function buildHistogram(group) {
+  const keys  = group.measurement_keys||[];
+  const counts= group.counts||{};
+  const total = Object.values(counts).reduce((a,b)=>a+b,0);
+  const sorted= Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+  const maxV  = sorted.length?sorted[0][1]:1;
+
+  const wrap = d('circ-hist-wrap');
+
+  const info = d('hist-info');
+  info.textContent = total.toLocaleString()+' shots';
+  wrap.appendChild(info);
+
+  const hist = d('histogram');
+  sorted.forEach(([state,count]) => {
+    const pct=(count/total*100).toFixed(1);
+    const h=Math.max(3, Math.round(count/maxV*165));
+    const col = d('bar-col');
+    col.innerHTML = `
+      <div class="bar-count">${count.toLocaleString()}</div>
+      <div class="bar-rect" style="height:${h}px" title="${state}: ${count} (${pct}%)"></div>
+      <div class="bar-state">|${state}⟩</div>
+      <div class="bar-pct">${pct}%</div>`;
+    hist.appendChild(col);
+  });
+  wrap.appendChild(hist);
+  return wrap;
+}
+
+function circuitSVG(circ) {
+  const instr = circ.instructions || [];
+
+  // qubit order of first appearance
+  const qOrder=[], seen=new Set();
+  instr.forEach(i => (i.locus||[]).forEach(q => { if(!seen.has(q)){seen.add(q);qOrder.push(q);} }));
+
+  // greedy column scheduling
+  // qCol[q] = next free column for qubit q
+  // colOccupied[col] = set of qubit indices that have a gate in that column
+  const qCol={};
+  qOrder.forEach(q => qCol[q]=0);
+  const colOccupied={};  // col -> Set of qubit row indices
+
+  function markCol(col, indices) {
+    if (!colOccupied[col]) colOccupied[col] = new Set();
+    indices.forEach(i => colOccupied[col].add(i));
+  }
+
+  const cols = instr.map(i => {
+    if (!i.locus||!i.locus.length) return null;
+
+    const indices = i.locus.map(q => qOrder.indexOf(q)).filter(x => x>=0);
+    if (!indices.length) return null;
+
+    // candidate column: max of all locus qubits' next-free column
+    let c = Math.max(...indices.map(idx => qCol[qOrder[idx]]||0));
+
+    // For multi-qubit gates, the drawn vertical line spans minIdx..maxIdx.
+    // If any qubit row in that span is already occupied at column c,
+    // we must push to c+1 (repeat until clear).
+    if (indices.length > 1) {
+      const minIdx = Math.min(...indices);
+      const maxIdx = Math.max(...indices);
+      let ok = false;
+      while (!ok) {
+        ok = true;
+        if (colOccupied[c]) {
+          for (let r = minIdx; r <= maxIdx; r++) {
+            if (colOccupied[c].has(r)) { c++; ok = false; break; }
+          }
+        }
+      }
+    }
+
+    // mark all rows in the span as occupied at this column
+    const minIdx = Math.min(...indices);
+    const maxIdx = Math.max(...indices);
+    const spanIndices = [];
+    for (let r = minIdx; r <= maxIdx; r++) spanIndices.push(r);
+    markCol(c, spanIndices);
+
+    // advance next-free column for all locus qubits
+    indices.forEach(idx => qCol[qOrder[idx]] = c+1);
+    return c;
+  });
+  const maxCol = Math.max(...Object.values(qCol), 1);
+
+  const ML=66, MR=30, MT=22, MB=26, CW=76, RH=58;
+  const W = ML + maxCol*CW + MR;
+  const H = MT + qOrder.length*RH + MB;
+  const qY = q   => MT + qOrder.indexOf(q)*RH + RH/2;
+  const cX = col => ML + col*CW + CW/2;
+
+  const BG='#ffffff', GATE_BG='#f8f9fa', WIRE='#e9ecef';
+  const C_LABEL='#495057', C_DIM='#6c757d';
+  const C_MEAS='#0066cc', C_CZ='#6c757d', C_PRX='#28a745', C_BAR='#dee2e6';
+
+  let s = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"
+    xmlns="http://www.w3.org/2000/svg"
+    style="font-family:'IBM Plex Mono',monospace;background:${BG};border-radius:4px;display:block;">`;
+
+  // wires
+  qOrder.forEach(q => {
+    const y=qY(q);
+    s += `<line x1="${ML-14}" y1="${y}" x2="${W-MR+8}" y2="${y}" stroke="${WIRE}" stroke-width="1.5"/>`;
+    s += `<text x="${ML-18}" y="${y+4}" fill="${C_LABEL}" font-size="12" text-anchor="end">${q}</text>`;
+  });
+
+  // gates
+  instr.forEach((inst,idx) => {
+    const col=cols[idx]; if(col===null) return;
+    const name=inst.name.toLowerCase(), x=cX(col);
+
+    if (name==='barrier') {
+      const ys=inst.locus.map(q=>qY(q));
+      const y0=Math.min(...ys), y1=Math.max(...ys);
+      s += `<line x1="${x}" y1="${y0-14}" x2="${x}" y2="${y1+14}"
+              stroke="${C_BAR}" stroke-width="1" stroke-dasharray="4 3"/>`;
+      return;
+    }
+
+    if (name==='measure') {
+      const y=qY(inst.locus[0]);
+      s += `<rect x="${x-19}" y="${y-17}" width="38" height="34" rx="3"
+              fill="${GATE_BG}" stroke="${C_MEAS}" stroke-width="1.2"/>`;
+      s += `<path d="M${x-10},${y+8} A10,12 0 0,1 ${x+10},${y+8}"
+              fill="none" stroke="${C_MEAS}" stroke-width="1.2"/>`;
+      s += `<line x1="${x}" y1="${y+8}" x2="${x+8}" y2="${y-4}" stroke="${C_MEAS}" stroke-width="1.2"/>`;
+      const key=inst.args&&inst.args.key?inst.args.key.split('_').pop():'';
+      if(key) s += `<text x="${x}" y="${y+26}" fill="${C_DIM}" font-size="8" text-anchor="middle">${key}</text>`;
+      return;
+    }
+
+    if (name==='cz') {
+      const [q1,q2]=inst.locus, y1=qY(q1), y2=qY(q2), midY=(y1+y2)/2;
+      s += `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="${C_CZ}" stroke-width="1.5"/>`;
+      s += `<circle cx="${x}" cy="${y1}" r="5.5" fill="${C_CZ}"/>`;
+      s += `<circle cx="${x}" cy="${y2}" r="5.5" fill="${C_CZ}"/>`;
+      s += `<rect x="${x-14}" y="${midY-10}" width="28" height="20" rx="2" fill="${GATE_BG}"/>`;
+      s += `<text x="${x}" y="${midY+5}" fill="${C_CZ}" font-size="11" text-anchor="middle" font-weight="500">CZ</text>`;
+      return;
+    }
+
+    if (name==='prx') {
+      const y=qY(inst.locus[0]);
+      const ang=inst.args&&inst.args.angle!=null?(inst.args.angle/Math.PI).toFixed(2)+'π':'';
+      const ph =inst.args&&inst.args.phase !=null?(inst.args.phase /Math.PI).toFixed(2)+'π':'';
+      s += `<rect x="${x-23}" y="${y-20}" width="46" height="40" rx="3"
+              fill="${GATE_BG}" stroke="${C_PRX}" stroke-width="1.2"/>`;
+      s += `<text x="${x}" y="${y-7}" fill="${C_PRX}" font-size="11.5" text-anchor="middle" font-weight="500">PRX</text>`;
+      if(ang) s += `<text x="${x}" y="${y+4}"  fill="${C_DIM}" font-size="7.5" text-anchor="middle">θ=${ang}</text>`;
+      if(ph)  s += `<text x="${x}" y="${y+13}" fill="${C_DIM}" font-size="7.5" text-anchor="middle">φ=${ph}</text>`;
+      return;
+    }
+
+    // generic gate
+    const y=qY(inst.locus[0]);
+    s += `<rect x="${x-18}" y="${y-14}" width="36" height="28" rx="3"
+            fill="${GATE_BG}" stroke="${C_DIM}" stroke-width="1"/>`;
+    s += `<text x="${x}" y="${y+4}" fill="${C_DIM}" font-size="10.5" text-anchor="middle">${inst.name.toUpperCase().slice(0,4)}</text>`;
+  });
+
+  return s + '</svg>';
+}
+
+
+
+/* ── timeline card ───────────────────────────── */
+function makeTimelineCard(tl) {
+  const card = cardEl('Execution Timeline');
+  const body = card.querySelector('.card-body');
+  const wrap = d('tl');
+
+  tl.forEach((ev,i) => {
+    const row   = d('tl-row');
+    const last  = i===tl.length-1;
+    const isExec= ev.status.includes('execution');
+    const dot   = document.createElement('div');
+    dot.className = last?'tl-dot done':isExec?'tl-dot active':'tl-dot';
+
+    const left = d('tl-left');
+    left.innerHTML = `
+      <div class="tl-status">${ev.status.replace(/_/g,' ')}</div>
+      <div class="tl-source">${ev.source}</div>`;
+
+    const right = d('tl-right');
+    const ts    = new Date(ev.timestamp);
+    const tStr  = ts.toISOString().slice(11,23);
+    let dHtml   = '';
+    if (i>0) {
+      const ms=ts-new Date(tl[i-1].timestamp);
+      if(ms>=0) dHtml=`<div class="tl-delta">+${ms} ms</div>`;
+    }
+    right.innerHTML=`<div class="tl-time">${tStr}</div>${dHtml}`;
+
+    row.appendChild(dot);
+    row.appendChild(left);
+    row.appendChild(right);
+    wrap.appendChild(row);
+  });
+
+  body.appendChild(wrap);
+
+  // wall time footer
+  if (tl.length > 1) {
+    const totalMs = new Date(tl[tl.length-1].timestamp) - new Date(tl[0].timestamp);
+    const footer = d('tl-footer');
+    footer.innerHTML = `Total wall time <span class="tl-footer-value">${totalMs} ms</span>`;
+    body.appendChild(footer);
+  }
+
+  return card;
+}
+
+/* ── calibration metrics card ────────────────── */
+function makeCalCard(data) {
+  const card = cardEl('Calibration Metrics');
+  const body = card.querySelector('.card-body');
+  const obs  = data.observations||[];
+
+  const ssro={}, gate={}, t1t2={}, twoQ={};
+  obs.forEach(o => {
+    const f=o.dut_field, v=o.value; let m;
+    // SSRO readout fidelity — matches both measure and measure_fidelity variants
+    if((m=f.match(/metrics\.ssro\.measure(?:_fidelity)?\.constant\.(QB\d+)\.fidelity$/))) { ssro[m[1]]=v; return; }
+    // PRX single-qubit gate fidelity — matches drag_gaussian (mock) and drag_crf (real)
+    if((m=f.match(/metrics\.rb\.prx\.drag_(?:gaussian|crf)\.(QB\d+)\.fidelity/))) { gate[m[1]]=v; return; }
+    // Coherence times
+    if((m=f.match(/characterization\.model\.(QB\d+)\.(t1_time|t2_time|t2_echo_time)/)))
+      { if(!t1t2[m[1]])t1t2[m[1]]={};  t1t2[m[1]][m[2]]=v; return; }
+    // CZ two-qubit gate fidelity — matches tgss (mock) and crf (real)
+    if((m=f.match(/metrics\.irb\.cz\.(?:tgss|crf)\.(QB\d+__QB\d+)\.fidelity/)))  { twoQ[m[1]]=v; return; }
+  });
+
+  function fc(v) { const p=v*100; return p>=98?'hi':p>=93?'md':'lo'; }
+
+  function fTile(label,val) {
+    const pDisplay=(val*100).toFixed(2), pBar=(val*100).toFixed(0), t=d('cal-tile');
+    t.innerHTML=`<div class="cal-tile-label">${label}</div>
+      <div class="cal-tile-value ${fc(val)}" style="font-size:17px">${pDisplay}<span class="unit">%</span></div>
+      <div class="cal-bar"><div class="cal-bar-fill" style="width:${pBar}%"></div></div>`;
+    return t;
+  }
+  function tTile(label,secs) {
+    const us=(secs*1e6).toFixed(1), t=d('cal-tile');
+    t.innerHTML=`<div class="cal-tile-label">${label}</div>
+      <div class="cal-tile-value">${us}<span class="unit">μs</span></div>`;
+    return t;
+  }
+  function section(title,items) {
+    if(!items.length) return;
+    const h=d('cal-group-title'); h.textContent=title; body.appendChild(h);
+    const g=d('cal-grid'); items.forEach(i=>g.appendChild(i)); body.appendChild(g);
+  }
+
+  section('Readout fidelity — SSRO',
+    Object.entries(ssro).sort().map(([q,v])=>fTile(q,v)));
+  section('Single-qubit gate fidelity — PRX',
+    Object.entries(gate).sort().map(([q,v])=>fTile(q,v)));
+  section('Two-qubit gate fidelity — CZ (IRB)',
+    Object.entries(twoQ).sort().map(([p,v])=>fTile(p.replace('__',' ↔ '),v)));
+
+  const t1=[],t2=[],t2e=[];
+  Object.entries(t1t2).sort().forEach(([q,v])=>{
+    if(v.t1_time      !=null) t1.push(tTile(q, v.t1_time));
+    if(v.t2_time      !=null) t2.push(tTile(q, v.t2_time));
+    if(v.t2_echo_time !=null) t2e.push(tTile(q, v.t2_echo_time));
+  });
+  section('T₁', t1);
+  section('T₂', t2);
+  section('T₂ echo', t2e);
+
+  return card;
+}
+
+/* ── helpers ─────────────────────────────────── */
+function cardEl(title) {
+  const c=document.createElement('div');
+  c.className='card';
+  c.innerHTML=`<div class="card-head"><span class="card-label">${title}</span></div><div class="card-body"></div>`;
+  return c;
+}
+function d(cls) {
+  const e=document.createElement('div');
+  if(cls) e.className=cls;
+  return e;
+}
+
+/* ── error fallback ──────────────────────────── */
+boot().catch(e => {
+  document.getElementById('summary').innerHTML =
+    `<div class="state err" style="padding:14px">${e.message}</div>`;
+  document.getElementById('cards').innerHTML =
+    `<div class="state err" style="flex-direction:column;gap:4px;padding:16px;font-size:12px;line-height:1.8;text-align:center">
+      Could not fetch job artifacts.<br>
+      Ensure <code>Access-Control-Allow-Origin: *</code> is set on your store.<br>
+      Or append <code style="color:var(--blue)">?job=&lt;artifact-base-url&gt;</code> to override path detection.
+    </div>`;
+});
+
+})();
+</script>
+</body>
+</html>
