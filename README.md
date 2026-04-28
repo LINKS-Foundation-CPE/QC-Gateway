@@ -2,7 +2,7 @@
 
 An authenticating, auditing reverse proxy for quantum computer HTTP APIs. Developed in the context of the **QTech Piemonte** strategic initiative.
 
-[![LINKS Foundation](https://linksfoundation.com/wp-content/uploads/2021/07/Logo.png)](https://linksfoundation.com)&nbsp;&nbsp;&nbsp;[![Politecnico di Torino](https://upload.wikimedia.org/wikipedia/it/4/47/Logo_PoliTo_dal_2021_blu.png)](https://www.polito.it)&nbsp;&nbsp;&nbsp;[![INRIM](https://upload.wikimedia.org/wikipedia/commons/9/9c/Logo_INRIM.jpg)](https://www.inrim.it)
+<a href="https://linksfoundation.com"><img src="docs/assets/logo-links.png" alt="LINKS Foundation" height="60"></a>&nbsp;&nbsp;&nbsp;<a href="https://www.polito.it"><img src="docs/assets/logo-polito.png" alt="Politecnico di Torino" height="60"></a>&nbsp;&nbsp;&nbsp;<a href="https://www.inrim.it"><img src="docs/assets/logo-inrim.jpg" alt="INRIM" height="60"></a>
 
 ---
 
