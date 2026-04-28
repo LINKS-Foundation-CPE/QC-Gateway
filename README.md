@@ -14,10 +14,10 @@ job accounting, artifact archival, and Prometheus metrics. Vendor-specific
 and site-specific behavior is isolated behind plugin interfaces so the core
 can be reused across different machines and deployments.
 
-> Status: Developed at the Quantum Computing and Simulation Lab of LINKS
-> Foundation and used in production on IQM-based quantum hardware. Open-
-> sourced so other projects can reuse the core and contribute plugins for
-> different vendors and sites.
+> Status: Developed by LINKS Foundation Advanced Computing, Photonics and
+> Electromagnetics research domain and used in production on IQM-based
+> quantum hardware. Open-sourced so other projects can reuse the core and
+> contribute plugins for different vendors and sites.
 
 ## Transparent to existing SDKs
 
