@@ -1,6 +1,11 @@
 # QC Gateway
 
-An authenticating, auditing reverse proxy for quantum computer HTTP APIs.
+An authenticating, auditing reverse proxy for quantum computer HTTP APIs. Developed in the context of the **QTech Piemonte** strategic initiative.
+
+[![LINKS Foundation](https://linksfoundation.com/wp-content/uploads/2021/07/Logo.png)](https://linksfoundation.com)&nbsp;&nbsp;&nbsp;[![Politecnico di Torino](https://upload.wikimedia.org/wikipedia/it/4/47/Logo_PoliTo_dal_2021_blu.png)](https://www.polito.it)&nbsp;&nbsp;&nbsp;[![INRIM](https://upload.wikimedia.org/wikipedia/commons/9/9c/Logo_INRIM.jpg)](https://www.inrim.it)
+
+---
+
 
 The proxy sits between end users (or client SDKs) and a quantum backend and
 adds the production concerns that vendor APIs typically don't provide:
