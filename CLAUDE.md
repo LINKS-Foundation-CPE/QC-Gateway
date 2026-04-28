@@ -173,6 +173,51 @@ To cut a release:
 
 Tags are bare (no `v` prefix) to match the existing history.
 
+## Repository layout — private + public
+
+Development happens on a **private GitLab repo**; the public open-source
+mirror lives on **GitHub**:
+
+| Remote | URL | Purpose |
+|--------|-----|---------|
+| `origin` | `gitlab.linksfoundation.com:links-iqm-spark/machine-management/nginx-reverse-proxy.git` | Private development (default push target) |
+| `github` | `github.com:LINKS-Foundation-CPE/QC-Gateway.git` | Public open-source mirror |
+
+### Branch mapping
+
+| Branch | Lives on | Pushed to |
+|--------|----------|-----------|
+| `main` | GitLab `origin` | `origin main` only |
+| `public` | Both remotes | `origin public` + `github main` |
+
+`public` is an **orphan branch** — its history starts from a clean
+"Initial public release" squash commit (2026-04-22) and never includes
+the pre-release private history. It is fast-forwarded from `main` one
+commit at a time via `git cherry-pick`.
+
+### Publishing a commit to GitHub
+
+After merging or committing to `main` on GitLab:
+
+```bash
+git checkout public
+git cherry-pick <commit-sha>          # repeat for each commit to publish
+git push origin public                # update GitLab mirror of public
+git push github public:main           # update GitHub main
+git checkout main
+```
+
+Review each cherry-pick before pushing — the `public` branch is the
+gate that prevents internal details from leaking to GitHub. Never
+`git push github main:main` or rebase `public` onto `main` directly
+(that would carry the full private history).
+
+### Adding the `github` remote (first-time setup on a new clone)
+
+```bash
+git remote add github git@github.com:LINKS-Foundation-CPE/QC-Gateway.git
+```
+
 ## Useful commands
 
 ```bash
