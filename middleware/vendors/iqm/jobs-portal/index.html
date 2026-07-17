@@ -714,8 +714,11 @@ function makeCalCard(data) {
     // Coherence times
     if((m=f.match(/characterization\.model\.(QB\d+)\.(t1_time|t2_time|t2_echo_time)/)))
       { if(!t1t2[m[1]])t1t2[m[1]]={};  t1t2[m[1]][m[2]]=v; return; }
-    // CZ two-qubit gate fidelity — matches tgss (mock) and crf (real)
-    if((m=f.match(/metrics\.irb\.cz\.(?:tgss|crf)\.(QB\d+__QB\d+)\.fidelity/)))  { twoQ[m[1]]=v; return; }
+    // CZ two-qubit gate fidelity — matches tgss (mock), crf, and gate-specific
+    // implementations like crf_acstarkcrf (real). The implementation token is
+    // captured so it can be surfaced in the section header.
+    if((m=f.match(/metrics\.irb\.cz\.([a-z0-9_]+)\.(QB\d+__QB\d+)\.fidelity/)))
+      { if(!twoQ[m[1]])twoQ[m[1]]={}; twoQ[m[1]][m[2]]=v; return; }
   });
 
   function fc(v) { const p=v*100; return p>=98?'hi':p>=93?'md':'lo'; }
@@ -743,8 +746,13 @@ function makeCalCard(data) {
     Object.entries(ssro).sort().map(([q,v])=>fTile(q,v)));
   section('Single-qubit gate fidelity — PRX',
     Object.entries(gate).sort().map(([q,v])=>fTile(q,v)));
-  section('Two-qubit gate fidelity — CZ (IRB)',
-    Object.entries(twoQ).sort().map(([p,v])=>fTile(p.replace('__',' ↔ '),v)));
+  // One section per CZ implementation; the impl-specific suffix (e.g.
+  // "acstarkcrf" from crf_acstarkcrf) is appended to the header when present.
+  Object.keys(twoQ).sort().forEach(impl => {
+    const suffix = impl.includes('_') ? ' ' + impl.slice(impl.indexOf('_')+1) : '';
+    section('Two-qubit gate fidelity — CZ (IRB' + suffix + ')',
+      Object.entries(twoQ[impl]).sort().map(([p,v])=>fTile(p.replace('__',' ↔ '),v)));
+  });
 
   const t1=[],t2=[],t2e=[];
   Object.entries(t1t2).sort().forEach(([q,v])=>{
