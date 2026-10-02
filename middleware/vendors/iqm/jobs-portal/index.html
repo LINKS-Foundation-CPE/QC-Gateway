@@ -21,6 +21,12 @@
   --green-soft:   rgba(40,167,69,.1);
   --amber:        #ffc107;
   --red:          #dc3545;
+  --drive:        #0066cc;
+  --flux:         #eb6834;
+  --readout:      #1baf7a;
+  --seq0:         #cde2fb;
+  --seq3:         #3987e5;
+  --seq6:         #0d366b;
   --sans: 'IBM Plex Sans', system-ui, sans-serif;
   --mono: 'IBM Plex Mono', 'Courier New', monospace;
 }
@@ -182,6 +188,33 @@ body::before {
   letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim);
 }
 .card-body { padding: 20px 22px; }
+.cchart { display:block; width:100%; height:auto; }
+table.tbl { border-collapse:collapse; font-family:var(--mono); font-size:11.5px;
+            font-variant-numeric:tabular-nums; width:auto; }
+table.tbl th, table.tbl td { text-align:right; padding:4px 16px 4px 0; white-space:nowrap; }
+table.tbl th { color:var(--text-faint); font-weight:500; border-bottom:1px solid var(--border); }
+table.tbl td { color:var(--text-dim); }
+table.tbl th:first-child, table.tbl td:first-child { text-align:left; color:var(--text); }
+.ctick { font-family: var(--mono); font-size: 10px; fill: var(--text-faint); font-variant-numeric: tabular-nums; }
+.clabel { font-family: var(--sans); font-size: 11px; fill: var(--text-dim); }
+.lane { font-family: var(--mono); font-size: 11px; fill: var(--text-dim); }
+.panel-key { font-family: var(--mono); font-size: 13px; color: var(--text); font-weight: 600; }
+.panel-meta { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+.panel-meta b { color: var(--text-dim); font-weight: 500; }
+.sweep-panel + .sweep-panel { border-top: 1px solid var(--border-soft); margin-top: 18px; padding-top: 18px; }
+.panel-hd { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; margin-bottom:10px; }
+.two-up { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+@media(max-width:820px){ .two-up { grid-template-columns:1fr; } }
+.cbar { display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:10px;
+        color:var(--text-faint); margin-top:8px; font-variant-numeric:tabular-nums; }
+.cbar .ramp { display:flex; height:8px; flex:0 0 110px; }
+.cbar .ramp i { flex:1; }
+.spotrow { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:12px; }
+.spotrow input[type=range] { width:220px; accent-color: var(--blue); }
+.spotrow .val { font-family:var(--mono); font-size:12px; color:var(--text); font-variant-numeric:tabular-nums; }
+.klegend { display:flex; gap:14px; flex-wrap:wrap; font-size:11.5px; color:var(--text-dim); margin-left:auto; }
+.klegend i { display:inline-block; width:10px; height:10px; margin-right:5px; vertical-align:-1px; }
+.reduced { font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-top:6px; }
 
 /* ── CIRCUIT ─────────────────────────────── */
 .circuit-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
@@ -350,13 +383,16 @@ const segs  = BASE.replace(/^https?:\/\/[^/]+/, '').split('/').filter(Boolean);
 const JOB   = segs[segs.length - 1] || '—';
 const EMAIL = segs[segs.length - 2] || '—';
 
-// Display original URL with /index.html if it exists
-const originalUrl = location.href.split('job=')[1] + '/index.html';
+// The raw artifact index, always reachable from the viewer. Derived from
+// BASE rather than by splitting the query string: splitting yields the string
+// "undefined" when the page is opened without ?job= (path detection), and it
+// keeps any parameter that happens to follow job= as part of the URL.
+const RAW_INDEX = BASE + '/index.html';
 document.getElementById('hdr-meta').textContent = EMAIL + '  ·  ' + JOB;
 const urlLinkElement = document.getElementById('hdr-url-link');
 if (urlLinkElement) {
-  urlLinkElement.textContent = originalUrl;
-  urlLinkElement.href = originalUrl;
+  urlLinkElement.textContent = RAW_INDEX;
+  urlLinkElement.href = RAW_INDEX;
 }
 document.title = 'Job ' + JOB.slice(0, 8) + '… · QResults';
 
@@ -371,17 +407,29 @@ function ok(r) { return r.status === 'fulfilled' ? r.value : null; }
 
 /* ── boot ────────────────────────────────────── */
 async function boot() {
-  const [tlR, cntR, plR, calR] = await Promise.allSettled([
+  const [tlR, cntR, plR, calR, swR, runR, rtR] = await Promise.allSettled([
     load('timeline.json'),
     load('measurement_counts.json'),
     load('payload.json'),
     load('calibration_metrics.json'),
+    // Sweep jobs: the reporter writes these decoded views beside the raw
+    // protobuf artifacts, so this page needs no wire format of its own.
+    load('sweep_results.parsed.json'),
+    load('payload.parsed.json'),
+    load('runtime_estimates.json'),
   ]);
 
   const tl  = ok(tlR);
   const cnt = ok(cntR);
   const pl  = ok(plR);
   const cal = ok(calR);
+  const sw  = ok(swR);
+  const run = ok(runR);
+  const rt  = ok(rtR);
+  // Shots per sweep spot. Not in the results artifact — the station reports it
+  // as the playlist repeat count.
+  const SHOTS = rt && rt.playlist_repeats ? rt.playlist_repeats : null;
+  const isSweep = !!(sw || run);
 
   // status badge
   const last = tl ? tl[tl.length - 1] : null;
@@ -390,7 +438,15 @@ async function boot() {
 
   // summary strip
   let shots='—', qubits='—', circuits='—', qpuTime='—', submitted='—';
-  if (pl) {
+  if (isSweep) {
+    // Shots and circuits are circuit-job notions; a sweep is described by how
+    // many readouts it returns and how many spots it stepped through.
+    shots    = SHOTS ? SHOTS.toLocaleString() : '—';
+    qubits   = (run && run.qubits) ? run.qubits.length
+             : ((run && run.components) ? run.components.filter(c => /^QB/.test(c)).length : '—');
+    circuits = sw ? Object.keys(sw.results).length : '—';
+  }
+  if (pl && !isSweep) {
     shots    = pl.shots ?? '—';
     circuits = (pl.circuits||[]).length;
     const qs = new Set();
@@ -406,17 +462,31 @@ async function boot() {
       qpuTime = (new Date(execEnd.timestamp) - new Date(execStart.timestamp)) + ' ms';
     }
   }
+  const spotCount = (run && run.axes && run.axes.length)
+    ? Math.max(...run.axes.flat().map(a => a.n || 0))
+    : (sw ? Math.max(...Object.values(sw.results).map(r => r.spots || 1)) : '—');
   document.getElementById('summary').innerHTML = `
     <div class="s-cell"><div class="s-label">Shots</div><div class="s-value">${shots}</div></div>
     <div class="s-cell"><div class="s-label">Qubits</div><div class="s-value">${qubits}</div></div>
-    <div class="s-cell"><div class="s-label">Circuits</div><div class="s-value">${circuits}</div></div>
+    <div class="s-cell"><div class="s-label">${isSweep ? 'Readouts' : 'Circuits'}</div><div class="s-value">${circuits}</div></div>
+    ${isSweep ? `<div class="s-cell"><div class="s-label">Sweep spots</div><div class="s-value">${spotCount}</div></div>` : ''}
     <div class="s-cell"><div class="s-label">QPU time</div><div class="s-value sm">${qpuTime}</div></div>
     <div class="s-cell"><div class="s-label">Submitted</div><div class="s-value sm">${submitted}</div></div>`;
 
   // cards
   const cards = document.getElementById('cards');
   cards.innerHTML = '';
-  if (pl || cnt) cards.appendChild(makeCircuitsCard(pl, cnt));
+  if (isSweep) {
+    if (sw) cards.appendChild(makeSweepResultsCard(
+      sw, (run && run.axes) || [],
+      (run && run.playlist && run.playlist.acquisitions) || [], SHOTS, run));
+    if (run && run.playlist) {
+      cards.appendChild(makeScheduleCard(run.playlist));
+      if (run.playlist.acquisitions.length) cards.appendChild(makeAcquisitionsCard(run.playlist));
+    }
+  } else if (pl || cnt) {
+    cards.appendChild(makeCircuitsCard(pl, cnt));
+  }
   if (tl)  cards.appendChild(makeTimelineCard(tl));
   if (cal) cards.appendChild(makeCalCard(cal));
 }
@@ -704,13 +774,23 @@ function makeCalCard(data) {
   const body = card.querySelector('.card-body');
   const obs  = data.observations||[];
 
+  // The SSRO task whose fidelity is the machine's readout fidelity.
+  const SSRO_TASK = 'measure';
+
   const ssro={}, gate={}, t1t2={}, twoQ={};
   obs.forEach(o => {
     const f=o.dut_field, v=o.value; let m;
-    // SSRO readout fidelity — matches both measure and measure_fidelity variants
-    if((m=f.match(/metrics\.ssro\.measure(?:_fidelity)?\.constant\.(QB\d+)\.fidelity$/))) { ssro[m[1]]=v; return; }
-    // PRX single-qubit gate fidelity — matches drag_gaussian (mock) and drag_crf (real)
-    if((m=f.match(/metrics\.rb\.prx\.drag_(?:gaussian|crf)\.(QB\d+)\.fidelity/))) { gate[m[1]]=v; return; }
+    // SSRO readout fidelity, keyed by task. A calibration set carries more
+    // than one — `measure` and `measure_fidelity` — reporting different
+    // numbers for the same qubit, and a single ssro[qubit] let whichever
+    // observation came last in the artifact overwrite the other one silently.
+    // Which task is rendered is decided below, not by the artifact's order.
+    if((m=f.match(/metrics\.ssro\.([a-z0-9_]+)\.constant\.(QB\d+)\.fidelity$/)))
+      { if(!ssro[m[1]])ssro[m[1]]={}; ssro[m[1]][m[2]]=v; return; }
+    // PRX single-qubit gate fidelity — drag_gaussian (mock), drag_crf (real).
+    // Keyed by implementation for the same reason as the SSRO tasks above.
+    if((m=f.match(/metrics\.rb\.prx\.([a-z0-9_]+)\.(QB\d+)\.fidelity/)))
+      { if(!gate[m[1]])gate[m[1]]={}; gate[m[1]][m[2]]=v; return; }
     // Coherence times
     if((m=f.match(/characterization\.model\.(QB\d+)\.(t1_time|t2_time|t2_echo_time)/)))
       { if(!t1t2[m[1]])t1t2[m[1]]={};  t1t2[m[1]][m[2]]=v; return; }
@@ -736,26 +816,47 @@ function makeCalCard(data) {
       <div class="cal-tile-value">${us}<span class="unit">μs</span></div>`;
     return t;
   }
+  // Entries sorted by qubit number, not lexically: a plain sort puts QB10
+  // before QB2, which silently misorders every machine with 10+ qubits.
+  function byQubit(obj) {
+    return Object.entries(obj).sort((a,b) =>
+      a[0].localeCompare(b[0], undefined, {numeric:true}));
+  }
   function section(title,items) {
     if(!items.length) return;
     const h=d('cal-group-title'); h.textContent=title; body.appendChild(h);
     const g=d('cal-grid'); items.forEach(i=>g.appendChild(i)); body.appendChild(g);
   }
 
-  section('Readout fidelity — SSRO',
-    Object.entries(ssro).sort().map(([q,v])=>fTile(q,v)));
-  section('Single-qubit gate fidelity — PRX',
-    Object.entries(gate).sort().map(([q,v])=>fTile(q,v)));
-  // One section per CZ implementation; the impl-specific suffix (e.g.
-  // "acstarkcrf" from crf_acstarkcrf) is appended to the header when present.
+  // Readout fidelity is `metrics.ssro.measure.constant.*`, the readout
+  // calibration of the measure gate — the series the Perses dashboards plot
+  // and the one the machine is judged on. A calibration set also carries
+  // `metrics.ssro.measure_fidelity.constant.*` from the separate fidelity
+  // characterisation, whose numbers differ for the same qubit; it is
+  // deliberately not shown. The fallback covers artifacts that carry only the
+  // other task, and names it in the header so it cannot be mistaken for the
+  // canonical one.
+  const ssroTask = ssro[SSRO_TASK] ? SSRO_TASK : Object.keys(ssro).sort()[0];
+  if (ssroTask)
+    section('Readout fidelity — SSRO' +
+              (ssroTask === SSRO_TASK ? '' : ' (' + ssroTask + ')'),
+      byQubit(ssro[ssroTask]).map(([q,v])=>fTile(q,v)));
+  // One PRX section per implementation, named in the header like the CZ ones:
+  // only one is present in practice, but two would otherwise collide the way
+  // the SSRO tasks did.
+  Object.keys(gate).sort().forEach(impl =>
+    section('Single-qubit gate fidelity — PRX (' + impl + ')',
+      byQubit(gate[impl]).map(([q,v])=>fTile(q,v))));
+  // The impl-specific suffix (e.g. "acstarkcrf" from crf_acstarkcrf) is
+  // appended to the CZ header when present.
   Object.keys(twoQ).sort().forEach(impl => {
     const suffix = impl.includes('_') ? ' ' + impl.slice(impl.indexOf('_')+1) : '';
     section('Two-qubit gate fidelity — CZ (IRB' + suffix + ')',
-      Object.entries(twoQ[impl]).sort().map(([p,v])=>fTile(p.replace('__',' ↔ '),v)));
+      byQubit(twoQ[impl]).map(([p,v])=>fTile(p.replace('__',' ↔ '),v)));
   });
 
   const t1=[],t2=[],t2e=[];
-  Object.entries(t1t2).sort().forEach(([q,v])=>{
+  byQubit(t1t2).forEach(([q,v])=>{
     if(v.t1_time      !=null) t1.push(tTile(q, v.t1_time));
     if(v.t2_time      !=null) t2.push(tTile(q, v.t2_time));
     if(v.t2_echo_time !=null) t2e.push(tTile(q, v.t2_echo_time));
@@ -764,6 +865,414 @@ function makeCalCard(data) {
   section('T₂', t2);
   section('T₂ echo', t2e);
 
+  return card;
+}
+
+/* ── sweep: shared chart helpers ─────────────── */
+/* One logical unit is one rendered pixel so tick type comes out at the size
+   it is set at; a shared viewBox would make one chart's labels twice another's. */
+function chart(w, h, m) {
+  const M = Object.assign({t:14,r:34,b:34,l:52}, m||{});
+  const pw = w-M.l-M.r, ph = h-M.t-M.b;
+  return {
+    w, h, M, pw, ph, parts: [],
+    x(v,d){ return M.l + (v-d[0])/(d[1]-d[0]||1)*pw; },
+    y(v,d){ return M.t + ph - (v-d[0])/(d[1]-d[0]||1)*ph; },
+    frame(xd, yd, xlab, ylab, xf, yf){
+      const T = n => Array.from({length:n+1},(_,i)=>i/n);
+      T(4).forEach(f=>{ const v=yd[0]+(yd[1]-yd[0])*f, yy=this.y(v,yd).toFixed(1);
+        this.parts.push(`<line x1="${M.l}" x2="${w-M.r}" y1="${yy}" y2="${yy}" stroke="var(--border)"/>`);
+        this.parts.push(`<text x="${M.l-7}" y="${(+yy+3.5).toFixed(1)}" text-anchor="end" class="ctick">${yf(v)}</text>`); });
+      T(4).forEach(f=>{ const v=xd[0]+(xd[1]-xd[0])*f, xx=this.x(v,xd).toFixed(1);
+        this.parts.push(`<text x="${xx}" y="${M.t+ph+15}" text-anchor="middle" class="ctick">${xf(v)}</text>`); });
+      this.parts.push(`<line x1="${M.l}" x2="${M.l}" y1="${M.t}" y2="${M.t+ph}" stroke="var(--text-faint)"/>`);
+      this.parts.push(`<line x1="${M.l}" x2="${w-M.r}" y1="${M.t+ph}" y2="${M.t+ph}" stroke="var(--text-faint)"/>`);
+      this.parts.push(`<text x="${M.l+pw/2}" y="${h-3}" text-anchor="middle" class="clabel">${xlab}</text>`);
+      this.parts.push(`<text transform="translate(11,${M.t+ph/2}) rotate(-90)" text-anchor="middle" class="clabel">${ylab}</text>`);
+      return this;
+    },
+    line(pts, colour){ this.parts.push(`<path d="${pts.map((q,i)=>(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)).join(' ')}" fill="none" stroke="${colour}" stroke-width="2" stroke-linejoin="round"/>`); return this; },
+    add(str){ this.parts.push(str); return this; },
+    svg(label){ return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${label}" class="cchart">${this.parts.join('')}</svg>`; }
+  };
+}
+const SEQ = ['var(--seq0)','#9ec5f4','#6da7ec','var(--seq3)','#256abf','#184f95','var(--seq6)'];
+const seqAt = t => SEQ[Math.max(0, Math.min(6, Math.round(t*6)))];
+const engTime = v => { const a=Math.abs(v);
+  if(!isFinite(v)) return String(v);
+  if(a===0) return '0';
+  if(a<1e-9) return (v*1e12).toFixed(1)+' ps';
+  if(a<1e-6) return (v*1e9).toFixed(1)+' ns';
+  if(a<1e-3) return (v*1e6).toFixed(1)+' µs';
+  if(a<1) return (v*1e3).toFixed(1)+' ms';
+  return v.toFixed(3)+' s'; };
+
+/* ── sweep: results card ─────────────────────── */
+/* Which chart a readout gets is decided by the acquisition method the
+   playlist declares for it, falling back to dtype and shape. Not by parsing
+   the key's name: the method is in the data, the naming is a convention. */
+function methodFor(key, acqs) {
+  const a = (acqs || []).find(x => x.label === key);
+  return a ? a.kind : null;
+}
+function axisFor(n, axes, byKey, key) {
+  /* hard_sweeps gives an axis per readout label, which beats guessing from a
+     matching length — it says which readout the axis belongs to. */
+  const keyed = byKey && byKey[key];
+  if (keyed && keyed.length && keyed[0].values && keyed[0].values.length === n) return keyed[0];
+  for (const group of (axes || []))
+    for (const ax of group)
+      if (ax.values && ax.values.length === n) return ax;
+  return null;
+}
+function indexAxis(n) {
+  return { label: 'sweep index', unit: '', values: Array.from({length:n},(_,i)=>i) };
+}
+
+function makeSweepResultsCard(res, axes, acqs, shots, run) {
+  const card = cardEl('Sweep results');
+  const body = card.querySelector('.card-body');
+  const byKey = (run && run.axes_by_key) || {};
+  const impl = (run && run.readout_label_to_impl) || {};
+  const all = Object.keys(res.results).sort();
+
+  /* Per-shot thresholded outcomes: one panel for all of them rather than a
+     chart each, because the question is how the readouts compare. */
+  const binary = all.filter(k => res.results[k].binary && res.results[k].shape.length <= 1);
+  if (binary.length) body.appendChild(outcomesPanel(binary, res, impl));
+
+  const keys = all.filter(k => binary.indexOf(k) === -1);
+  if (!keys.length && !binary.length) body.innerHTML = '<div class="reduced">No results in this job.</div>';
+
+  keys.forEach(key => {
+    const e = res.results[key];
+    const method = methodFor(key, acqs);
+    const panel = d('sweep-panel');
+    const shape = '[' + e.shape.join(', ') + ']';
+    let rule = '', charts = '';
+
+    if (e.field) {                                   /* 2-D trace field */
+      rule = 'heatmap';
+      charts = fieldCharts(key, e, axisFor(e.shape[0], axes, byKey, key) || indexAxis(e.field.length));
+    } else if (e.dtype === 'complex128') {           /* demodulated readout */
+      rule = 'IQ plane + magnitude';
+      charts = complexCharts(key, e, axisFor(e.values.length, axes, byKey, key) || indexAxis(e.values.length));
+    } else if (method === 'threshold_discrimination' || e.dtype === 'int64') {
+      rule = shots ? 'P(1) with binomial interval' : 'counts';
+      charts = countsChart(key, e, axisFor(e.values.length, axes, byKey, key) || indexAxis(e.values.length), shots);
+    } else if (method === 'timetrace' || e.shape.length <= 1) {
+      rule = 'trace';
+      charts = traceChart(key, e);
+    } else {
+      rule = 'values';
+      charts = `<div class="reduced">No chart for dtype ${e.dtype} with shape ${shape}.</div>`;
+    }
+
+    panel.innerHTML =
+      `<div class="panel-hd"><span class="panel-key">${key}</span>
+        <span class="panel-meta">dtype <b>${e.dtype}</b> &nbsp; shape <b>${shape}</b>` +
+        (method ? ` &nbsp; method <b>${method.replace(/_/g,' ')}</b>`
+                : (impl[key] ? ` &nbsp; impl <b>${impl[key]}</b>` : '')) +
+        `</span><span class="panel-meta" style="margin-left:auto">${rule}</span></div>` +
+      charts +
+      (e.reduced ? `<div class="reduced">reduced for display — ${
+          Object.entries(e.reduced).map(([k,v])=>k+' '+v).join(' · ')}</div>` : '');
+    body.appendChild(panel);
+  });
+  return card;
+}
+
+/* Per-shot readout outcomes. A thousand zeros and ones is not a waveform:
+   what a reader wants is the proportion, its uncertainty, and how the
+   readouts compare — so one panel, one row per readout. */
+function outcomesPanel(keys, res, impl) {
+  const panel = d('sweep-panel');
+  const rows = keys.map(k => {
+    const e = res.results[k];
+    const n = e.n, ones = e.ones == null ? Math.round(e.values.reduce((a,b)=>a+b,0)) : e.ones;
+    const p = n ? ones/n : 0;
+    return {k, n, ones, p, ci: 1.96*Math.sqrt(Math.max(p*(1-p),0)/(n||1))};
+  });
+  const W = 940, RH = 34, L = 190, R = 90, T = 26;
+  const H = T + rows.length*RH + 26, pw = W-L-R;
+  const X = v => L + v*pw;
+  let g = '';
+  [0,0.25,0.5,0.75,1].forEach(t=>{
+    g += `<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${T-6}" y2="${T+rows.length*RH}" stroke="var(--border)"/>`;
+    g += `<text x="${X(t).toFixed(1)}" y="${T-11}" text-anchor="middle" class="ctick">${t.toFixed(2)}</text>`; });
+  rows.forEach((r,i)=>{
+    const y = T + i*RH + RH/2;
+    g += `<text x="${L-10}" y="${y+4}" text-anchor="end" class="lane">${r.k}</text>`;
+    g += `<rect x="${L}" y="${(y-7).toFixed(1)}" width="${X(r.p)-L}" height="14" fill="var(--drive)" fill-opacity=".22"/>`;
+    const lo = Math.max(0, r.p-r.ci), hi = Math.min(1, r.p+r.ci);
+    g += `<line x1="${X(lo).toFixed(1)}" x2="${X(hi).toFixed(1)}" y1="${y}" y2="${y}" stroke="var(--drive)" stroke-width="1.5" stroke-opacity=".6"/>`;
+    g += `<line x1="${X(r.p).toFixed(1)}" x2="${X(r.p).toFixed(1)}" y1="${(y-9).toFixed(1)}" y2="${(y+9).toFixed(1)}" stroke="var(--drive)" stroke-width="2.5"/>`;
+    g += `<text x="${(X(1)+8).toFixed(1)}" y="${y+4}" class="lane">${r.p.toFixed(3)} ± ${r.ci.toFixed(3)}</text>`;
+  });
+  g += `<text x="${L+pw/2}" y="${H-4}" text-anchor="middle" class="clabel">P(1) — fraction of shots read as 1, with 95% binomial interval</text>`;
+  const implNames = Array.from(new Set(keys.map(k=>impl[k]).filter(Boolean)));
+  panel.innerHTML =
+    `<div class="panel-hd"><span class="panel-key">readout outcomes</span>
+      <span class="panel-meta">${keys.length} readouts &nbsp; ${rows[0].n.toLocaleString()} shots each` +
+      (implNames.length ? ` &nbsp; impl <b>${implNames.join(', ')}</b>` : '') +
+      `</span><span class="panel-meta" style="margin-left:auto">per-shot outcomes</span></div>` +
+    `<svg viewBox="0 0 ${W} ${H}" class="cchart" role="img" aria-label="Readout outcome probabilities">${g}</svg>` +
+    `<table class="tbl" style="margin-top:12px"><thead><tr><th>readout</th><th>shots</th><th>ones</th><th>zeros</th><th>P(1)</th><th>95% CI</th></tr></thead><tbody>` +
+    rows.map(r=>`<tr><td>${r.k}</td><td>${r.n}</td><td>${r.ones}</td><td>${r.n-r.ones}</td>` +
+      `<td>${r.p.toFixed(4)}</td><td>±${r.ci.toFixed(4)}</td></tr>`).join('') + `</tbody></table>`;
+  return panel;
+}
+
+function traceChart(key, e) {
+  const v = e.values;
+  const yd = extent(v), xd = [0, v.length-1];
+  const c = chart(940, 260).frame(xd, yd, 'sample (decimated)', 'amplitude (a.u.)',
+                                  x=>x.toFixed(0), y=>y.toFixed(2));
+  c.add(`<line x1="${c.M.l}" x2="${c.w-c.M.r}" y1="${c.y(0,yd).toFixed(1)}" y2="${c.y(0,yd).toFixed(1)}" stroke="var(--text-faint)"/>`);
+  c.line(v.map((y,i)=>[c.x(i,xd), c.y(y,yd)]), 'var(--drive)');
+  return c.svg('Acquisition trace for ' + key);
+}
+
+function fieldCharts(key, e, ax) {
+  const rows = e.field.length, cols = e.field[0].length;
+  // The field arrives as an envelope (max |value| per bucket), already >= 0.
+  const absmax = Math.max(...e.field.flat()) || 1;
+  const HM = {t:14,r:14,b:34,l:64};
+  const c = chart(460, 280, HM);
+  const cw = c.pw/cols, ch = c.ph/rows;
+  for (let r=0;r<rows;r++) for (let q=0;q<cols;q++)
+    c.add(`<rect x="${(HM.l+q*cw).toFixed(2)}" y="${(HM.t+r*ch).toFixed(2)}" width="${(cw+0.4).toFixed(2)}" height="${(ch+0.4).toFixed(2)}" fill="${seqAt(e.field[r][q]/absmax)}" shape-rendering="crispEdges"/>`);
+  [0, rows>>1, rows-1].forEach(r=>{
+    const val = ax.values[e.row_indices ? e.row_indices[r] : r];
+    c.add(`<text x="${HM.l-7}" y="${(HM.t+r*ch+ch/2+3.5).toFixed(1)}" text-anchor="end" class="ctick">${fmtAx(val, ax)}</text>`);});
+  c.add(`<line x1="${HM.l}" x2="${HM.l+c.pw}" y1="${HM.t+rows*ch}" y2="${HM.t+rows*ch}" stroke="var(--text-faint)"/>`);
+  [0, cols>>1, cols-1].forEach(q=>
+    c.add(`<text x="${(HM.l+q*cw).toFixed(1)}" y="${HM.t+rows*ch+15}" text-anchor="middle" class="ctick">${q}</text>`));
+  c.add(`<text x="${HM.l+c.pw/2}" y="${c.h-3}" text-anchor="middle" class="clabel">sample bucket</text>`);
+  c.add(`<text transform="translate(12,${HM.t+rows*ch/2}) rotate(-90)" text-anchor="middle" class="clabel">${ax.label}${ax.unit?' ('+ax.unit+')':''}</text>`);
+
+  const ramp = SEQ.map(x=>`<i style="background:${x}"></i>`).join('');
+  const bar = `<div class="cbar"><span>0</span><span class="ramp">${ramp}</span><span>${absmax.toFixed(2)}</span><span style="margin-left:5px">|amplitude| (a.u.)</span></div>`;
+
+  const last = e.field[rows-1], yd = [0, absmax*1.06], xd = [0, cols-1];
+  const c2 = chart(460, 280, {t:14,r:20,b:34,l:56})
+    .frame(xd, yd, 'sample bucket', '|amplitude| (a.u.)', x=>x.toFixed(0), y=>y.toFixed(2));
+  c2.line(last.map((y,i)=>[c2.x(i,xd), c2.y(y,yd)]), 'var(--drive)');
+
+  return `<div class="two-up">
+    <div>${c.svg('Trace envelope field for '+key)}${bar}</div>
+    <div>${c2.svg('Last row trace for '+key)}<div class="reduced">row ${
+      fmtAx(ax.values[e.row_indices ? e.row_indices[rows-1] : rows-1], ax)}</div></div></div>`;
+}
+
+function complexCharts(key, e, ax) {
+  const z = e.values, n = z.length;
+  const mag = z.map(([re,im])=>Math.hypot(re,im));
+  const lim = Math.max(...z.flat().map(Math.abs)) * 1.15 || 1;
+  const IM = {t:18,r:20,b:38,l:54};
+  const c = chart(460, 300, IM);
+  const ix = v => IM.l + (v+lim)/(2*lim)*c.pw, iy = v => IM.t + c.ph - (v+lim)/(2*lim)*c.ph;
+  c.add(`<line x1="${IM.l}" x2="${IM.l+c.pw}" y1="${iy(0).toFixed(1)}" y2="${iy(0).toFixed(1)}" stroke="var(--border)"/>`);
+  c.add(`<line x1="${ix(0).toFixed(1)}" x2="${ix(0).toFixed(1)}" y1="${IM.t}" y2="${IM.t+c.ph}" stroke="var(--border)"/>`);
+  c.add(`<rect x="${IM.l}" y="${IM.t}" width="${c.pw}" height="${c.ph}" fill="none" stroke="var(--border)"/>`);
+  [-lim/2, 0, lim/2].forEach(t=>{
+    c.add(`<text x="${ix(t).toFixed(1)}" y="${IM.t+c.ph+15}" text-anchor="middle" class="ctick">${t.toFixed(2)}</text>`);
+    c.add(`<text x="${IM.l-7}" y="${(iy(t)+3.5).toFixed(1)}" text-anchor="end" class="ctick">${t.toFixed(2)}</text>`);});
+  c.add(`<path d="${z.map((q,i)=>(i?'L':'M')+ix(q[0]).toFixed(1)+' '+iy(q[1]).toFixed(1)).join(' ')}" fill="none" stroke="var(--text-faint)" stroke-width="1.5"/>`);
+  z.forEach(([re,im],i)=> c.add(`<circle cx="${ix(re).toFixed(1)}" cy="${iy(im).toFixed(1)}" r="4.5" fill="${seqAt(i/(n-1||1))}" stroke="var(--surface2)" stroke-width="1.5"/>`));
+  [[0,'first'],[n-1,'last']].forEach(([i,tag])=>{
+    c.add(`<circle cx="${ix(z[i][0]).toFixed(1)}" cy="${iy(z[i][1]).toFixed(1)}" r="4.5" fill="${seqAt(i/(n-1||1))}" stroke="var(--text)" stroke-width="1.5"/>`);
+    c.add(`<text x="${(ix(z[i][0])+8).toFixed(1)}" y="${(iy(z[i][1])+(i?14:-7)).toFixed(1)}" class="lane">${tag} · ${fmtAx(ax.values[i],ax)}</text>`);});
+  c.add(`<text x="${IM.l+c.pw/2}" y="${c.h-3}" text-anchor="middle" class="clabel">I (a.u.)</text>`);
+  c.add(`<text transform="translate(12,${IM.t+c.ph/2}) rotate(-90)" text-anchor="middle" class="clabel">Q (a.u.)</text>`);
+  const ramp = SEQ.map(x=>`<i style="background:${x}"></i>`).join('');
+  const bar = `<div class="cbar"><span>${fmtAx(ax.values[0],ax)}</span><span class="ramp">${ramp}</span><span>${fmtAx(ax.values[n-1],ax)}</span><span style="margin-left:5px">${ax.label}</span></div>`;
+
+  const xd = [ax.values[0], ax.values[n-1]], yd = extent(mag);
+  const c2 = chart(460, 300, {t:18,r:24,b:38,l:56})
+    .frame(xd, yd, axTitle(ax), '|z| (a.u.)',
+           x=>fmtAxShort(x,ax), y=>y.toFixed(2));
+  c2.line(mag.map((mm,i)=>[c2.x(ax.values[i],xd), c2.y(mm,yd)]), 'var(--drive)');
+  mag.forEach((mm,i)=> c2.add(`<circle cx="${c2.x(ax.values[i],xd).toFixed(1)}" cy="${c2.y(mm,yd).toFixed(1)}" r="3.5" fill="var(--drive)" stroke="var(--surface2)" stroke-width="1.5"/>`));
+  /* Deliberately no 1/e marker: |z| decays towards the ground-state
+     magnitude, not towards zero, so the first crossing of mag[0]/e is not a
+     lifetime. Reporting one would mean fitting, which is analysis and not this
+     page's job. */
+  return `<div class="two-up"><div>${c.svg('IQ plane for '+key)}${bar}</div><div>${c2.svg('Magnitude for '+key)}</div></div>`;
+}
+
+function countsChart(key, e, ax, shots) {
+  /* Counts out of a known shot count are a proportion, so the uncertainty is
+     computable and belongs on the mark. Without the shot count they are just
+     counts, and claiming a probability would be inventing a denominator. */
+  const n = e.values.length;
+  const p = shots ? e.values.map(cv => cv/shots) : e.values.slice();
+  const se = shots ? p.map(pi => Math.sqrt(Math.max(pi*(1-pi),0)/shots)) : p.map(()=>0);
+  const xd = [ax.values[0], ax.values[n-1]];
+  const yd = shots ? [-0.04, 1.04] : extent(p);
+  const c = chart(940, 260, {t:16,r:30,b:36,l:52})
+    .frame(xd, yd, axTitle(ax), shots ? 'P(1)' : 'count',
+           x=>fmtAxShort(x,ax), y=> shots ? y.toFixed(1) : y.toFixed(0));
+  c.line(p.map((pi,i)=>[c.x(ax.values[i],xd), c.y(pi,yd)]), 'var(--drive)');
+  p.forEach((pi,i)=>{
+    const xx = c.x(ax.values[i],xd).toFixed(1);
+    if (shots) {
+      const lo = Math.max(0, pi-1.96*se[i]), hi = Math.min(1, pi+1.96*se[i]);
+      c.add(`<line x1="${xx}" x2="${xx}" y1="${c.y(lo,yd).toFixed(1)}" y2="${c.y(hi,yd).toFixed(1)}" stroke="var(--drive)" stroke-width="1.5" stroke-opacity=".5"/>`);
+    }
+    c.add(`<circle cx="${xx}" cy="${c.y(pi,yd).toFixed(1)}" r="3.5" fill="var(--drive)" stroke="var(--surface2)" stroke-width="1.5"/>`);});
+  return c.svg((shots ? 'Excited-state probability for ' : 'Counts for ')+key) +
+    (shots ? `<div class="reduced">${shots.toLocaleString()} shots per point · 95% binomial interval</div>`
+           : `<div class="reduced">shot count unknown — plotting raw counts</div>`);
+}
+
+function extent(v){ const a=Math.min(...v), b=Math.max(...v); const pad=(b-a)*0.06||0.1; return [a-pad,b+pad]; }
+function fmtAx(v, ax){ return ax.unit === 's' ? engTime(v) : (typeof v==='number' ? (Math.abs(v)>=100?v.toFixed(0):v.toFixed(4)) : v); }
+function fmtAxShort(v, ax){ return ax.unit === 's' ? (v*1e6).toFixed(0) : (typeof v==='number'? v.toFixed(2) : v); }
+/* Ticks on a seconds axis are rendered in µs, so the label has to say µs. */
+function axTitle(ax){ return ax.label + (ax.unit ? ' (' + (ax.unit === 's' ? 'µs' : ax.unit) + ')' : ''); }
+
+/* ── sweep: pulse schedule card ──────────────── */
+function makeScheduleCard(pl) {
+  const card = cardEl('Pulse schedule');
+  const body = card.querySelector('.card-body');
+  const KIND = {drive:'var(--drive)', flux:'var(--flux)', readout:'var(--readout)'};
+  const chans = pl.channels.slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const acqByIdx = pl.acquisitions;
+
+  const row = d('spotrow');
+  row.innerHTML = `<label class="panel-meta" for="pl-spot">schedule</label>
+    <input type="range" id="pl-spot" min="0" max="${pl.schedules.length-1}" value="${pl.schedules.length-1}" step="1">
+    <span class="val" id="pl-spotval"></span>
+    <span class="klegend"><span><i style="background:var(--drive)"></i>drive</span>
+      <span><i style="background:var(--flux)"></i>flux</span>
+      <span><i style="background:var(--readout)"></i>readout</span>
+      <span><i style="background:var(--text-faint)"></i>virtual Rz</span></span>`;
+  body.appendChild(row);
+  const full = d(), zoom = d();
+  body.appendChild(full); body.appendChild(zoom);
+  const stat = d('reduced'); body.appendChild(stat);
+  stat.innerHTML = `${pl.instruction_refs} instruction references across ${pl.schedules.length}` +
+    (pl.schedules_total > pl.schedules.length ? ` of ${pl.schedules_total}` : '') +
+    ` schedules resolve to ${pl.instruction_table_entries} interned table entries and ` +
+    `${pl.waveform_table_entries} waveforms — every waveform a shape plus parameters, not samples.`;
+
+  // Every position on the chart is in nanoseconds, converted per lane from
+  // that lane's own sample rate. Instruction durations are sample counts, and
+  // sample counts from two channels running at different rates are not
+  // comparable — laying them on one axis as if they were would silently
+  // stretch one lane against another.
+  function spans(k){
+    const sched = pl.schedules[k]; let maxEnd = 0; const lanes = [];
+    chans.forEach(c=>{
+      const ns = smp => smp / (c.sample_rate || 1e9) * 1e9;
+      let t = 0;
+      const items = (sched[c.name]||[]).map(r=>{
+        const ins = c.instructions[r], dur = ns(ins.dur);
+        const it = Object.assign({}, ins, {start:t, end:t+dur, durNs:dur, toNs:ns,
+          env: (ins.wf!=null && c.waveforms[ins.wf]) ? c.waveforms[ins.wf] : null});
+        t += dur; return it; });
+      maxEnd = Math.max(maxEnd, t); lanes.push({chan:c, items});
+    });
+    return {lanes, maxEnd};
+  }
+
+  // The window the detail panel shows: the part of the schedule where
+  // something happens. A real schedule opens with the reset delay — 300 us of
+  // `wait` on every lane before a 2 us burst of pulses — so a fixed window at
+  // the origin, which is what this used to be, shows an empty chart every
+  // time. Padded by a twentieth of its own width so the first pulse does not
+  // sit on the axis.
+  function activeWindow(k){
+    const {lanes, maxEnd} = spans(k);
+    let lo = Infinity, hi = -Infinity;
+    lanes.forEach(ln => ln.items.forEach(it => {
+      if (it.kind === 'wait') return;
+      lo = Math.min(lo, it.start); hi = Math.max(hi, it.end);
+    }));
+    if (!isFinite(lo)) return [0, maxEnd];       // nothing but waits
+    const pad = Math.max((hi - lo) / 20, 1);
+    return [Math.max(0, lo - pad), Math.min(maxEnd, hi + pad)];
+  }
+  const LH = 42, PT = 12, PB = 32, L = 128, R = 16, W = 940;
+  function draw(k, x0, x1, opts){
+    const {lanes} = spans(k), pw = W-L-R, H = PT + lanes.length*LH + PB;
+    const X = ns => L + (ns-x0)/(x1-x0)*pw;
+    let g = '';
+    lanes.forEach((ln,i)=>{
+      const base = PT + i*LH + LH - 8;
+      g += `<line x1="${L}" x2="${L+pw}" y1="${base}" y2="${base}" stroke="var(--border)"/>`;
+      g += `<text x="${L-8}" y="${base+3.5}" text-anchor="end" class="lane">${ln.chan.name}</text>`;
+      ln.items.forEach(it=>{
+        if (it.end < x0 || it.start > x1) return;
+        if (it.kind === 'virtual_rz') {
+          const x = X(it.start);
+          if (x>=L && x<=L+pw) {
+            g += `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${base-LH+15}" y2="${base}" stroke="var(--text-faint)" stroke-width="2"/>`;
+            if (opts.labels) g += `<text x="${(x+4).toFixed(1)}" y="${base-LH+23}" class="lane">Rz</text>`;
+          }
+          return;
+        }
+        if (!it.env) return;
+        const amp = (LH-18) * Math.min(1, Math.abs(it.scale==null?1:it.scale)/0.30);
+        const e = it.env.env, n = e.length, col = KIND[it.kind] || 'var(--text-faint)';
+        // The waveform's own length, not the instruction's: a readout trigger
+        // holds the acquisition window open longer than the probe pulse it
+        // plays, and drawing the pulse across the whole window would overstate
+        // how long the resonator is driven.
+        const wNs = it.env.n_samples ? it.toNs(Math.min(it.env.n_samples, it.dur)) : it.durNs;
+        const pts = e.map((y,j)=>[X(it.start + (j/(n-1))*wNs), base - y*amp]);
+        g += `<path d="M ${X(it.start).toFixed(1)} ${base} ${pts.map(q=>'L '+q[0].toFixed(1)+' '+q[1].toFixed(1)).join(' ')} L ${X(it.start+wNs).toFixed(1)} ${base} Z" fill="${col}" fill-opacity=".2" stroke="${col}" stroke-width="2" stroke-linejoin="round"/>`;
+        if (it.acqs && it.acqs.length && opts.labels) {
+          const byDelay = {};
+          it.acqs.forEach(ai=>{ const a=acqByIdx[ai]; if(a)(byDelay[a.delay_samples]=byDelay[a.delay_samples]||[]).push(a); });
+          Object.entries(byDelay).forEach(([dly,list])=>{
+            const x = X(it.start + it.toNs(+dly)); if (x<L||x>L+pw) return;
+            g += `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${base-LH+13}" y2="${base}" stroke="var(--text)" stroke-width="1.5" stroke-opacity=".55"/>`;
+            g += `<text x="${(x+5).toFixed(1)}" y="${base-LH+21}" class="lane">${list.length} acq</text>`;});
+        }
+      });
+    });
+    if (opts.window) {
+      const [w0,w1] = opts.window;
+      g += `<rect x="${X(w0).toFixed(1)}" y="${PT}" width="${Math.max(2,X(w1)-X(w0)).toFixed(1)}" height="${lanes.length*LH}" fill="var(--blue)" opacity=".08"/>`;
+      [w0,w1].forEach(w=> g += `<line x1="${X(w).toFixed(1)}" x2="${X(w).toFixed(1)}" y1="${PT}" y2="${PT+lanes.length*LH}" stroke="var(--blue)" opacity=".45"/>`);
+    }
+    const yA = PT + lanes.length*LH + 6;
+    g += `<line x1="${L}" x2="${L+pw}" y1="${yA}" y2="${yA}" stroke="var(--text-faint)"/>`;
+    const span = x1 - x0, dp = span >= 1000 ? 0 : span >= 100 ? 1 : 2;
+    for (let i=0;i<=4;i++){ const ns = x0+span*i/4, x = X(ns);
+      g += `<text x="${x.toFixed(1)}" y="${yA+15}" text-anchor="middle" class="ctick">${ns.toFixed(dp)}</text>`; }
+    g += `<text x="${L+pw/2}" y="${H-2}" text-anchor="middle" class="clabel">time (ns)</text>`;
+    return `<svg viewBox="0 0 ${W} ${H}" class="cchart" role="img" aria-label="Pulse schedule">${g}</svg>`;
+  }
+  const slider = row.querySelector('#pl-spot'), sval = row.querySelector('#pl-spotval');
+  function render(){
+    const k = +slider.value, maxEnd = spans(k).maxEnd, win = activeWindow(k);
+    const lead = win[0] > maxEnd / 100
+      ? ` — opens with ${engTime(win[0] * 1e-9)} of reset delay` : '';
+    full.innerHTML = `<div class="panel-meta">Full schedule — one lane per controller channel${lead}</div>` +
+                     draw(k, 0, maxEnd, {window:win, labels:false});
+    zoom.innerHTML = `<div class="panel-meta" style="margin-top:14px">Pulse detail — the shaded window above</div>` +
+                     draw(k, win[0], win[1], {labels:true});
+    const idx = pl.schedule_indices ? pl.schedule_indices[k] : k;
+    sval.textContent = `${idx+1} / ${pl.schedules_total}`;
+  }
+  slider.addEventListener('input', render);
+  render();
+  return card;
+}
+
+function makeAcquisitionsCard(pl) {
+  const card = cardEl('Acquisitions');
+  const NAME = {timetrace:'time trace', integration:'complex integration',
+                threshold_discrimination:'threshold discrimination'};
+  card.querySelector('.card-body').innerHTML =
+    `<div class="panel-meta" style="margin-bottom:10px">Each acquisition method names and shapes one array in the results.</div>` +
+    `<table class="tbl"><thead><tr><th>label</th><th>channel</th><th>method</th><th>delay</th></tr></thead><tbody>` +
+    pl.acquisitions.map(a=>`<tr><td>${a.label}</td><td>${a.channel}</td>` +
+      `<td>${NAME[a.kind]||a.kind}</td><td>${a.delay_samples} samples</td></tr>`).join('') +
+    `</tbody></table>`;
   return card;
 }
 

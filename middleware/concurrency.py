@@ -74,6 +74,7 @@ class ConcurrencyLimiter:
         shots: int | None = None,
         circuits: int | None = None,
         job_type: str | None = None,
+        max_shots_override: int | None = None,
     ) -> "ReservationResult":
         """Try to reserve capacity for a new submission.
 
@@ -84,6 +85,10 @@ class ConcurrencyLimiter:
             username: Username making the submission
             shots: Number of shots in the submission (default: 1)
             circuits: Number of circuits in the submission (default: 1)
+            max_shots_override: Per-submission shot budget replacing the flat
+                ``max_concurrent_shots`` limit, for a policy plugin that
+                computes the ceiling per principal; None keeps the configured
+                default
 
         Returns:
             ReservationResult with allowed status and counters info
@@ -156,16 +161,20 @@ class ConcurrencyLimiter:
             new_job_count = self.redis_client.incr(job_counter_key)
             self.redis_client.expire(job_counter_key, self.counter_ttl_seconds)
 
+            shot_limit = (
+                max_shots_override if max_shots_override is not None else self.max_concurrent_shots
+            )
+
             logger.info(
                 "User %s: shots=%s, jobs=%s, shot_limit=%s",
                 username,
                 new_shot_count,
                 new_job_count,
-                self.max_concurrent_shots,
+                shot_limit,
             )
 
             # Check if shot limit exceeded
-            if new_shot_count > self.max_concurrent_shots:
+            if new_shot_count > shot_limit:
                 # Rollback and deny
                 self.redis_client.decrby(shot_counter_key, shot_increment)
                 self.redis_client.decr(job_counter_key)
@@ -174,7 +183,7 @@ class ConcurrencyLimiter:
                     "User %s exceeded concurrent shot limit (%s > %s)",
                     username,
                     new_shot_count,
-                    self.max_concurrent_shots,
+                    shot_limit,
                 )
 
                 return ReservationResult(

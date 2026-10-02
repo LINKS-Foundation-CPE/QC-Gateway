@@ -28,22 +28,46 @@ class S3Uploader:
         bucket_name: str | None = None,
         app_user: str | None = None,
         app_password: str | None = None,
+        internal_url: str | None = None,
     ):
         # Always use environment variables or explicit arguments
-        minio_server_url = minio_server_url or os.getenv(
-            "MINIO_SERVER_URL", "https://store.qtest.linksfoundation.com"
-        )
+        # No default: the object store URL is deployment-specific and is also
+        # what artifact links point at, so a wrong value fails in a confusing
+        # place. Better to fail here.
+        minio_server_url = minio_server_url or os.getenv("MINIO_SERVER_URL", "")
+        if not minio_server_url:
+            raise ValueError(
+                "MINIO_SERVER_URL is not set (public URL of the S3-compatible "
+                "object store, e.g. https://store.example.org)"
+            )
         bucket_name = bucket_name or os.getenv("BUCKET_NAME", "minio-job-data")
         app_user = app_user or os.getenv("APP_USER", "")
         app_password = app_password or os.getenv("APP_PASSWORD", "")
 
+        # Where this process talks to the store, when that is not the public
+        # URL: from inside a container the public address may be unreachable
+        # (a loopback address is the container itself) or a detour through a
+        # reverse proxy. Links handed out keep using MINIO_SERVER_URL.
+        #
+        # Not MINIO_INTERNAL_URL: early deployments carry that name in their
+        # .env as a bare host (minio-job-data) that nothing read, and giving it
+        # a meaning sent production's uploads to a container that no longer
+        # existed. For the same reason a value without a scheme is ignored.
+        endpoint = internal_url or os.getenv("S3_ENDPOINT_URL") or ""
+        if endpoint and not endpoint.startswith(("http://", "https://")):
+            logger.warning(
+                "S3_ENDPOINT_URL=%r has no http:// or https:// scheme; ignoring it", endpoint
+            )
+            endpoint = ""
+        endpoint = endpoint or minio_server_url
+
         self.minio_server_url = minio_server_url
         self.bucket_name = bucket_name
         self.client = Minio(
-            minio_server_url.replace("https://", "").replace("http://", ""),
+            endpoint.replace("https://", "").replace("http://", ""),
             access_key=app_user,
             secret_key=app_password,
-            secure=minio_server_url.startswith("https://"),
+            secure=endpoint.startswith("https://"),
         )
 
     def ensure_bucket(self):

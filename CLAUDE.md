@@ -59,6 +59,7 @@ middleware/
 ├── job_capture.py       # Payload capture helper
 ├── job_counters.py      # Prometheus metrics worker
 ├── job_reporter.py      # Background reconciliation worker
+├── calibration_poller.py # Background calibration worker (own container, own token)
 ├── utils.py             # Generic response builders
 ├── plugins/
 │   ├── interfaces.py    # VendorPlugin, SitePlugin (Protocols)
@@ -195,6 +196,26 @@ mirror lives on **GitHub**:
 the pre-release private history. It is fast-forwarded from `main` one
 commit at a time via `git cherry-pick`.
 
+### What never goes on `public`
+
+Some paths are deployment machinery for *our* installation. They belong on
+`main` and must not be cherry-picked to `public`:
+
+| Path | Why |
+|------|-----|
+| `.gitlab-ci.yml` | The deploy pipeline: our SSH targets, deploy directory, and the `DEV_*`/`PROD_*` CI variable names. Useless publicly and a description of our infrastructure. |
+| `docs/DEV_DEPLOYMENT.md`, `docker-compose.dev.yaml`, `env.dev.example`, `config-dev/` | Already excluded. The FQDN-free dev stack is documented for internal use; `portable-deployment` is the public equivalent. |
+
+Everything under `config/` **is** published, and is written to be
+deployment-agnostic: the vhost templates are named after the service they front
+and take every host name from `.env`, and `config/fail2ban/jail.local` is
+generated from a template so that no deployment's address ranges are committed.
+Keep it that way — if you find yourself hardcoding a domain, an IP range or a
+URL there, make it an `.env` variable and document it in `env.example`.
+
+If a commit touches both publishable code and an excluded path, cherry-pick it
+with `-n`, drop the excluded path, and commit on `public` with the same message.
+
 ### Publishing a commit to GitHub
 
 After merging or committing to `main` on GitLab:
@@ -233,5 +254,29 @@ mypy
 pre-commit run --all-files
 
 # Rebuild just the middleware image
-docker compose build fastapi-proxy reporter
+docker compose build fastapi-proxy reporter calibration-poller
 ```
+
+## Working on this repository on its own
+
+Clone it anywhere and it is workable: everything needed to build, test and change
+it is in here. Nothing in this file depends on another repository being at hand,
+or on any private document.
+
+What it talks to, and where each contract is written down:
+
+| Counterpart | Interface | Where the contract is |
+|---|---|---|
+| The machine's own HTTP API | Proxied verbatim; the vendor plugin classifies submissions and parses responses | `middleware/vendors/<name>/`, `docs/DOCUMENTATION.md` |
+| Portal backend (`quantum-api`) | The site plugin calls `POST /jobAuthorizer`, `POST`/`PUT /jobReport`, `GET /userRoles/{username}` | `middleware/sites/spark/`, and that repository's `api.yml` |
+| Identity provider (Keycloak) | JWT validated against the realm's JWKS; roles read from `realm_access.roles` | `middleware/authentication.py`, `middleware/authorization.py` |
+| Redis | Per-user concurrency limits, and — where a batch scheduler provisions per-job tokens — the token bus the auth plugin reads | `middleware/concurrency.py`; the token record layout is documented by the provisioner that writes it |
+| Object store (S3/MinIO), PostgreSQL | Artefact upload and the job log | `middleware/minio.py`, `middleware/db.py` |
+
+`proxy_and_capture` in `middleware/main.py` is the canonical request flow. Read it
+in full before changing the order of anything in it.
+
+Every repository in the stack carries a `CLAUDE.md` in this same shape, so the
+same is true read from the other side. If you find yourself needing a fact that
+is not in one of them, that is a gap worth fixing in the repository that owns the
+fact — not a reason to go looking for a central document.

@@ -15,6 +15,19 @@ class Settings(BaseSettings):
     VENDOR_PLUGIN: str = "iqm"
     SITE_PLUGIN: str = "spark"
 
+    # Authentication backends, comma-separated, tried in this order. The
+    # default is the OIDC/Keycloak plugin alone, i.e. the behaviour this
+    # gateway had before authentication was pluggable.
+    AUTH_PLUGINS: str = "keycloak"
+    # Reject any token that does not carry a plugin's prefix, instead of
+    # offering it to the prefix-less plugins. For a deployment that accepts
+    # scheduler-minted tokens only.
+    STRICT_PREFIX_MODE: bool = False
+
+    # Submission-time policy. The default reproduces the flat per-user
+    # concurrency limits this gateway has always applied.
+    POLICY_PLUGIN: str = "passthrough"
+
     # Operational mode: production, authentication, reporting, maintenance
     MIDDLEWARE_MODE: str = "production"
 
@@ -33,6 +46,9 @@ class Settings(BaseSettings):
 
     # MinIO/S3 settings
     MINIO_SERVER_URL: str
+    # Endpoint for the S3 client itself, when it must differ from the public
+    # URL links carry (e.g. http://rustfs:9000 inside the compose network).
+    S3_ENDPOINT_URL: str | None = None
     BUCKET_NAME: str
     APP_USER: str
     APP_PASSWORD: str

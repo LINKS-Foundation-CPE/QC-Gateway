@@ -9,9 +9,10 @@ Functions:
 - upload_artifact_from_response(uploader, username, jobid, atype, resp)
 - upload_links_html(uploader, username, jobid, artifact_locations)
 
-The helpers preserve the existing behaviour: try to parse JSON responses
-and upload a Python object via `upload_json`, falling back to text when
-parsing fails.
+A response that parses as JSON is uploaded as an object via `upload_json`,
+which avoids double-escaping on retrieval. Anything else is uploaded
+byte-for-byte: several of the machine's artifacts are protobuf, and text is
+not a lossless container for them.
 """
 
 from typing import Any
@@ -29,18 +30,31 @@ def upload_artifact_from_response(
 ) -> str:
     """Upload an artifact retrieved from an upstream vendor response.
 
-    - If `resp` contains JSON, upload that object (avoids double-escaping).
-    - Otherwise upload the textual representation.
+    - If `resp` contains JSON, upload that object as `<atype>.json` (which
+      avoids double-escaping on retrieval).
+    - Otherwise upload the response body **verbatim** as `<atype>.bin`.
+
+    The second case used to go through ``resp.text``, and that silently
+    destroyed every binary artifact the machine produces. ``.text`` decodes
+    with ``errors="replace"``, so each byte that is not valid UTF-8 becomes
+    U+FFFD and is gone: 38% of the bytes of a real sweep-results artifact,
+    which no parser can then read. Binary stays binary.
     """
     try:
         json_obj = resp.json()
     except Exception:
         json_obj = None
 
-    payload = (
-        json_obj if json_obj is not None else (resp.text if hasattr(resp, "text") else resp.content)
-    )
-    return uploader.upload_json(payload, f"{username}/{jobid}/{atype}.json")
+    if json_obj is not None:
+        return uploader.upload_json(json_obj, f"{username}/{jobid}/{atype}.json")
+
+    data = resp.content if hasattr(resp, "content") else bytes(resp)
+    content_type = "application/octet-stream"
+    if hasattr(resp, "headers"):
+        # Keep what the machine said it was, so a client can dispatch on it
+        # rather than on the file name.
+        content_type = resp.headers.get("content-type", content_type) or content_type
+    return uploader.upload_bytes(data, f"{username}/{jobid}/{atype}.bin", content_type)
 
 
 def upload_links_html(
@@ -63,3 +77,15 @@ def upload_links_html(
     return uploader.upload_links_as_html(
         artifact_locations, f"{username}/{jobid}/index.html", title=title
     )
+
+
+def upload_parsed_artifact(
+    uploader: S3Uploader, username: str, jobid: str, atype: str, parsed: Any
+) -> str:
+    """Upload a vendor-decoded view of a binary artifact as `<atype>.parsed.json`.
+
+    A sidecar, not a replacement: the raw bytes keep their own object, so the
+    decoded view can be regenerated or ignored, and a viewer that wants the
+    full fidelity still has somewhere to go.
+    """
+    return uploader.upload_json(parsed, f"{username}/{jobid}/{atype}.parsed.json")

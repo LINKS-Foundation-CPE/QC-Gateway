@@ -14,6 +14,104 @@ The middleware is organized into three layers:
 
 ## Plugin Interfaces
 
+### AuthPlugin Protocol (`middleware/plugins/interfaces.py`)
+
+Turns a bearer token into a `Principal`. One deployment authenticates people
+holding OIDC tokens; another accepts tokens a batch scheduler minted for a
+job. Both are the same question — *who is submitting* — answered from
+different evidence, so it is a plugin point.
+
+```python
+class AuthPlugin(Protocol):
+    name: str                  # identifier used in AUTH_PLUGINS and log lines
+    prefixes: list[str]        # token prefixes owned; empty = fallback chain
+    async def validate(self, token: str) -> Principal | None: ...
+```
+
+Three outcomes, and the difference between them is the whole design:
+
+| Outcome | Meaning | What the chain does |
+|---|---|---|
+| a `Principal` | authenticated | stops, request proceeds |
+| `None` | "not my token" | tries the next plugin |
+| raise `AuthError` | this token is mine and it is bad | stops, returns the error's status |
+
+Routing, in `middleware/authentication.py`:
+
+1. A token matching a plugin's declared **prefix** goes to that plugin alone.
+   A prefix is a hard claim: a token that announces its issuer and then fails
+   to verify is a failure, not a reason to keep guessing.
+2. A token with no recognised prefix is offered to the **prefix-less** plugins
+   in configuration order; the first `Principal` wins.
+
+That is what makes the chain additive. A JWT carries no prefix, so it stays in
+the fallback chain and a newly added prefix-owning plugin cannot shadow it —
+`AUTH_PLUGINS=keycloak` (the default) and `AUTH_PLUGINS=keycloak,sqed` treat
+an OIDC token identically.
+
+Shipped implementations:
+
+| Plugin | Prefix | Credential |
+|---|---|---|
+| `keycloak` (`middleware/auth/keycloak.py`) | none | RS256 JWT against the realm's JWKS; roles from `realm_access.roles` |
+| `sqed` (`middleware/auth/sqed.py`) | `sqed_` | per-job token on a Redis hash `qpu:token:<token>`, one field per live SLURM job |
+
+The `sqed` plugin only ever **reads** Redis — the `qpu:*` namespace belongs to
+whatever provisions the tokens. A token is valid while at least one field is
+live, because a job array shares one token across jobs that start and end
+independently. Its `Principal.metadata` carries `job_ids`, `n_licenses` and
+the SLURM `account` the job was charged to.
+
+**Failure semantics worth copying in a new plugin.** Authentication fails
+closed: an unreachable token backend refuses the request (with 503, not 401 —
+the token may well be valid and the plugin cannot tell). The optional
+per-user roles lookup fails *open*, because it only ever adds roles: a portal
+outage should cost a user their extra privileges, not stop a running cluster.
+
+### PolicyPlugin Protocol (`middleware/plugins/interfaces.py`)
+
+Answers "may this principal submit *this*, right now" — quota, budget,
+concurrency. A deployment question rather than a property of the machine: one
+site caps concurrent shots per user with a flat number, another derives the
+cap from licenses a batch scheduler has already reserved.
+
+```python
+class PolicyPlugin(Protocol):
+    name: str
+    async def check_submission(self, principal, submission) -> PolicyDecision: ...
+    async def on_submission_accepted(self, decision, job_id) -> None: ...
+    async def rollback(self, decision) -> None: ...
+```
+
+Three calls rather than one, because **capacity is taken before the request is
+proxied and the machine may still refuse it**. `check_submission` reserves,
+`on_submission_accepted` is the commit point once a job id exists, and
+`rollback` returns the capacity when the machine says no or the call never
+lands. `main.py` calls all three; a plugin that reserves nothing implements
+the last two as no-ops.
+
+`PolicyDecision.reservation` is an opaque bag the plugin fills and the core
+hands back untouched. Per-submission state belongs there rather than on the
+plugin instance: two submissions are in flight whenever two clients are, and
+instance state cannot tell them apart.
+
+Shipped implementations:
+
+| Plugin | Limit |
+|---|---|
+| `passthrough` (default) | `MAX_CONCURRENT_SHOTS` / `MAX_CONCURRENT_SWEEPS` per user, via `ConcurrencyLimiter` — byte-for-byte the behaviour that preceded this plugin point, including the 429 messages |
+| `shot_budget` | `min(n_licenses × SHOTS_PER_LICENSE, MAX_CONCURRENT_SHOTS)` concurrent active shots |
+
+`shot_budget` takes `n_licenses` from the cluster — for a `sqed` principal, the
+sum over live token fields, which the scheduler already reserved for the
+lifetime of the job. Nothing is claimed from a pool: the scheduler is the only
+allocator, so a principal that did not come from it falls back to the flat cap.
+Sweeps are exempt from the shot budget and keep `MAX_CONCURRENT_SWEEPS`.
+
+Both plugins reserve through the **same** `ConcurrencyLimiter` instance, which
+is why `load_policy_plugin` takes it as an argument instead of constructing
+one: two limiters would mean two views of one Redis budget.
+
 ### VendorPlugin Protocol (`middleware/plugins/interfaces.py`)
 
 Defines the contract for vendor-specific quantum computer integration:
@@ -34,7 +132,8 @@ Key methods:
 - `get_terminal_statuses() -> set[str]` — terminal status strings
 - `get_job_status(job_id, ...) -> JobStatusResult` — poll job status
 - `classify_artifacts(status, available) -> ArtifactClassification` — artifact filtering
-- `process_calibration_runs(...)` — vendor-specific calibration
+- `build_calibration_headers() -> dict` — auth for the calibration endpoints, which may need more privilege than job traffic; kept separate so that credential never rides on user requests
+- `process_calibration_runs(...)` — vendor-specific calibration, run by the separate calibration poller
 
 ### SitePlugin Protocol (`middleware/plugins/interfaces.py`)
 
@@ -58,6 +157,8 @@ Rich data structures exchanged between the core and plugins:
 
 ```python
 from middleware.plugins.datatypes import (
+    Principal,              # Authenticated identity (auth_source, uid, username, roles, metadata)
+    PolicyDecision,         # Submission-policy verdict (allowed, status_code, reason, reservation)
     RoutesConfig,           # Route definitions (role_routes, logged_routes, etc.)
     JobSubmission,          # Parsed submission request (shots, circuits, project, job_type)
     SubmissionResult,       # Parsed submission response (job_id, artifact_types)
@@ -93,6 +194,12 @@ if checker.check("/api/v1/jobs", "POST", user):
 ### 2. concurrency.py — Per-User Concurrency Limiting
 
 Redis-based concurrency limits, independent of any vendor or site.
+
+The gateway reaches this through the policy plugin rather than directly: `ConcurrencyLimiter`
+counts, and `PolicyPlugin` decides. Both shipped policies reserve against these same counters,
+which is why the limiter is constructed once and handed to `load_policy_plugin()` — two
+instances would mean two views of one budget. Used standalone, as below, it behaves as it
+always has.
 
 ```python
 from middleware.concurrency import ConcurrencyLimiter
@@ -188,6 +295,11 @@ from middleware.vendors.iqm.response_parser import (
 )
 from middleware.vendors.iqm.headers import build_machine_headers
 from middleware.vendors.iqm.job_status import fetch_job_status
+from middleware.vendors.iqm.sweep_parser import (
+    parse_artifact,          # dispatch on artifact type; None for anything not decoded
+    parse_sweep_results,     # station_control.v2.SweepResultsResponse -> decimated traces
+    parse_run_definition,    # RunDefinition -> sweep axes, playlist, run properties
+)
 ```
 
 ## SPARK Site Plugin

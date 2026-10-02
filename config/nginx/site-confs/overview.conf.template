@@ -1,0 +1,21 @@
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name overview.${BASE_DOMAIN};
+
+    include /config/nginx/ssl.conf;
+
+    client_max_body_size 0;
+
+    location / {
+        include /config/nginx/proxy.conf;
+        include /config/nginx/resolver.conf;
+        # Rendered by configure_nginx.sh from OVERVIEW_UPSTREAM, so nginx sees a
+        # literal address here and needs no runtime resolution. SWAG runs on the
+        # host network, so a service on this machine is 127.0.0.1:<port>, the
+        # same arrangement as grafana.
+        proxy_pass ${OVERVIEW_UPSTREAM};
+    }
+
+}

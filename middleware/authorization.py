@@ -9,7 +9,7 @@ lives in the site plugin (e.g. ``middleware.sites.spark.authorization``).
 
 import logging
 
-from middleware.authentication import User
+from middleware.plugins.datatypes import Principal
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class RoleAuthorizationChecker:
         # Fallback: keep prefix matching for backwards compatibility
         return ap.startswith(rp)
 
-    def check(self, path: str, method: str, user: User) -> bool:
+    def check(self, path: str, method: str, user: Principal) -> bool:
         """Check if user has required roles for the given path and method.
 
         This supports parameterized ROLE_ROUTES (e.g. containing `{param}`)

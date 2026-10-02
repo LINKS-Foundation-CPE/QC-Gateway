@@ -70,6 +70,44 @@ class ArtifactClassification:
 
 
 @dataclass
+class Principal:
+    """Authenticated identity produced by an auth plugin.
+
+    Replaces the bare username the core used to carry: a token minted by a
+    batch scheduler identifies a cluster account and a set of live jobs, none
+    of which fits in an OIDC-shaped user record.
+
+    ``metadata`` is a free-form, auth-source-specific bag — decoded JWT claims
+    for an OIDC plugin, scheduler job ids for a token-bus plugin. The core
+    never reads it; plugins that do must access it defensively, since which
+    plugin authenticated a given request is a deployment decision.
+    """
+
+    auth_source: str
+    uid: str
+    username: str
+    roles: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PolicyDecision:
+    """Outcome of a policy plugin's submission check.
+
+    ``reservation`` is an opaque bag the plugin fills and the core hands back
+    untouched to ``on_submission_accepted`` and ``rollback``. Per-submission
+    state belongs here rather than in plugin instance state: two submissions
+    are in flight at once whenever two clients are, and instance state cannot
+    tell them apart.
+    """
+
+    allowed: bool
+    reason: str | None = None
+    status_code: int = 429
+    reservation: dict[str, Any] | None = None
+
+
+@dataclass
 class JobAuthorizationResult:
     """Result of a site-level job authorization check."""
 

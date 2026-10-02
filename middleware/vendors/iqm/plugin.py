@@ -37,6 +37,7 @@ from middleware.vendors.iqm.response_parser import (
     extract_artifact_types_from_response_text,
     extract_jobid_from_response_text,
 )
+from middleware.vendors.iqm.sweep_parser import parse_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,14 @@ class IQMVendorPlugin:
         headers.update(build_machine_headers(self._token))
         return headers
 
+    def build_calibration_headers(self) -> dict[str, str]:
+        # The administrator token where one is configured, because that is all
+        # the calibration endpoints accept now; otherwise the device token, as
+        # before. Never the other way round: the admin token stays out of the
+        # job path, which proxies user traffic.
+        admin = self._iqm_settings.ADMIN_IQM_TOKEN
+        return build_machine_headers(admin) if admin else self.build_upstream_headers({})
+
     def get_terminal_statuses(self) -> set[str]:
         return set(_TERMINAL_STATUSES)
 
@@ -95,6 +104,9 @@ class IQMVendorPlugin:
         verify_tls: bool,
     ) -> JobStatusResult:
         return fetch_job_status(job_id, machine_url, headers, timeout, verify_tls)
+
+    def parse_artifact(self, artifact_type: str, data: bytes) -> Any | None:
+        return parse_artifact(artifact_type, data)
 
     def get_artifact_url(self, job_id: str, artifact_type: str) -> str:
         return f"/api/v1/jobs/{job_id}/artifacts/{artifact_type}"

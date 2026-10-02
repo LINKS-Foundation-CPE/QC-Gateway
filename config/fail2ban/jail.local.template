@@ -5,10 +5,11 @@
 # folder and restart the container
 
 [DEFAULT]
-# Prevents banning LAN subnets
-ignoreip = 10.0.0.0/8
-           192.168.0.0/16
-           172.16.0.0/12
+# Prevents banning LAN subnets, plus whatever this deployment considers trusted
+# (typically the operators' own public range, so that a fumbled login from the
+# office does not lock the team out). Set FAIL2BAN_IGNOREIP_EXTRA in .env —
+# space- or newline-separated — and configure_nginx.sh renders it here.
+ignoreip = 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12 ${FAIL2BAN_IGNOREIP_EXTRA}
 
 # Changes the default ban action from "iptables-multiport", which causes issues on some platforms, to "iptables-allports".
 banaction = iptables-allports

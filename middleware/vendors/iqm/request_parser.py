@@ -136,7 +136,7 @@ def extract_project_from_metadata(request_body) -> str | None:
 
 def classify_job_type(path: str) -> str:
     """Determine job type based on the IQM request path."""
-    if path.startswith("/api/v1/jobs/default/sweep"):
+    if path.startswith("/api/v1/jobs/default/run"):
         return "sweep"
     elif path.startswith("/api/v1/jobs/default/circuit"):
         return "circuit"

@@ -34,7 +34,7 @@ unchanged. Existing vendor client SDKs and CLIs (e.g. `iqm-client`) work **witho
 - **Per-user concurrency limiting** backed by Redis counters (shots and
   sweep circuits are both tracked).
 - **Job accounting** — submitted payloads are captured in S3-compatible
-  object storage (MinIO) and recorded in PostgreSQL.
+  S3-compatible object storage (RustFS in the reference deployment) and recorded in PostgreSQL.
 - **Background job reconciliation** — a separate worker polls upstream job
   status, uploads artifacts, and reports final state to the site's portal.
 - **Prometheus metrics** — per-user and global gauges for queued / active

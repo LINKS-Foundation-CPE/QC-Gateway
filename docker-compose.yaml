@@ -45,6 +45,37 @@ services:
     labels:
       - "loki.job=job-reporter"
 
+  # Calibration reports, and the day-by-day index of them. Same image as the
+  # reporter, a different entry point: it was split out of the reporter when the
+  # machine began requiring an administrator token for its calibration
+  # endpoints, so that token (ADMIN_IQM_TOKEN in .env) is held by this container
+  # alone. Without it, calibration falls back to IQM_SERVER_TOKEN, as before.
+  calibration-poller:
+    build: .
+    image: fastapi-middleware:latest
+    container_name: calibration-poller
+    command: ["python", "-u", "-m", "middleware.calibration_poller"]
+    environment:
+      - TZ=Europe/Rome
+      - VENDOR_PLUGIN=iqm
+      - SITE_PLUGIN=spark
+      - POSTGRES_DB=jobproxy
+      - POSTGRES_USER=jobproxy
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - JOB_REPORTER_HTTP_TIMEOUT=120
+      - JOB_REPORTER_VERIFY_TLS=false
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "loki.job=calibration-poller"
+
   swag:
     image: lscr.io/linuxserver/swag:4.2.0
     container_name: nginx-certbot
@@ -133,11 +164,12 @@ services:
     labels:
       - "loki.job=job-reporter-postgres"
 
-  minio:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
-    container_name: minio-job-data
+  # The object store. RustFS speaks the same S3 API and reads the same
+  # MINIO_ROOT_* credentials, so nothing that talks to it changes.
+  rustfs:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    container_name: rustfs-job-data
     restart: always
-    command: server /data --console-address ":9001"
     environment:
       - TZ=Europe/Rome
     env_file:
@@ -146,29 +178,43 @@ services:
       - "127.0.0.1:9001:9001"
       - "127.0.0.1:9000:9000"
     volumes:
-      - ${MINIO_STORAGE_PATH}/data:/data
+      - ${MINIO_STORAGE_PATH}/rustfs:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 20s
       timeout: 20s
       retries: 3
+    depends_on:
+      rustfs-data-owner:
+        condition: service_completed_successfully
     labels:
-      - "loki.job=minio-job-data"
+      - "loki.job=rustfs-job-data"
     logging: *default-logging
 
-  minio-init:
-    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
-    container_name: minio-init
+  # RustFS runs as uid 10001; a data directory Docker creates on first start
+  # is root's. Only the top directory: everything below it is RustFS's own.
+  rustfs-data-owner:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    user: "0:0"
+    entrypoint: ["chown", "10001:10001", "/data"]
+    volumes:
+      - ${MINIO_STORAGE_PATH}/rustfs:/data
+    restart: "no"
+    logging: *default-logging
+
+  rustfs-init:
+    build: ./rustfs-init
+    container_name: rustfs-init
     environment:
       - TZ=Europe/Rome
+      - STORE_ENDPOINT=http://rustfs:9000
     env_file:
       - .env
     volumes:
-      - ./minio-init:/scripts
-    entrypoint: /bin/sh
-    command: /scripts/bootstrap.sh
+      # Read-only, to tell MinIO's leftover data from a never-migrated bucket.
+      - ${MINIO_STORAGE_PATH}:/storage:ro
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
     restart: "no"
     logging: *default-logging
@@ -197,7 +243,7 @@ services:
     restart: always
     privileged: true
     volumes:
-      - ${MINIO_STORAGE_PATH}/data:/data/Backup:ro
+      - ${MINIO_STORAGE_PATH}/rustfs:/data/rustfs:ro
       - ${MINIO_STORAGE_PATH}/restore:/restore
     environment:
       - TZ=Europe/Rome

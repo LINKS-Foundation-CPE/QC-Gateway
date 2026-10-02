@@ -37,12 +37,14 @@ class SparkSitePlugin:
         project_name: str | None,
         extra_headers: dict[str, str] | None,
         timeout: float,
+        job_type: str | None = None,
     ) -> JobAuthorizationResult:
         return await self._auth_checker.check(
             username=username,
             project_name=project_name,
             extra_headers=extra_headers,
             timeout=timeout,
+            job_type=job_type,
         )
 
     async def report_job_async(self, job_id: str, payload: dict[str, Any]) -> JobReportResult:
@@ -55,7 +57,14 @@ class SparkSitePlugin:
         return await self._async_reporter.send_initial_report(payload)
 
     def build_results_url(self, index_url: str, job_type: str) -> str:
+        """The URL reported to the portal as a job's results.
+
+        Every job type gets the viewer, not a directory listing. A sweep used
+        to be sent to the raw artifact index instead, because the viewer could
+        not read protobuf — it now reads the parsed sidecars the reporter
+        writes, so the exception has no reason left. The raw artifacts stay one
+        click away: the viewer links the index in its own header.
+        """
         index_url = index_url.removesuffix("/index.html")
-        if job_type == "sweep":
-            return index_url + "/index.html"
-        return f"https://jobs.{self._base_domain}/index.html?job={index_url}"
+        portal_url = self._spark_settings.JOBS_PORTAL_URL or f"https://jobs.{self._base_domain}"
+        return f"{portal_url}/index.html?job={index_url}"

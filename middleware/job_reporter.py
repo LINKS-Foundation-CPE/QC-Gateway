@@ -3,8 +3,9 @@
 """Background job reporter — uploads artifacts and reports jobs.
 
 This module runs as a background worker that reconciles locally-tracked jobs
-with the upstream quantum computer server and publishes job artifacts and
-calibration reports to MinIO.
+with the upstream quantum computer server and publishes job artifacts to
+MinIO. Calibration reports are fetched by a separate worker,
+``middleware.calibration_poller``.
 
 Vendor-specific logic (e.g., how to query job status, which terminal statuses
 exist, how to fetch artifacts) is delegated to the vendor plugin.
@@ -17,7 +18,6 @@ Main responsibilities:
 - For terminal jobs: upload artifacts, timeline and payload to MinIO and
   send job reports via the site plugin.
 - Decrement per-user Redis counters (jobs/shots) in an idempotent manner.
-- Periodically run vendor-specific calibration processing.
 
 Reliability and design notes:
 - Best-effort behavior: network/storage errors are logged and do not cause
@@ -37,7 +37,12 @@ import time
 
 import requests
 
-from middleware.artifacts import upload_artifact_from_response, upload_links_html, upload_timeline
+from middleware.artifacts import (
+    upload_artifact_from_response,
+    upload_links_html,
+    upload_parsed_artifact,
+    upload_timeline,
+)
 from middleware.config import Settings
 from middleware.db import init_db
 from middleware.minio import S3Uploader
@@ -252,6 +257,37 @@ def process_once(vendor_plugin, site_plugin):
                             )
                             artifact_locations[atype] = results_url
                             logger.info("Uploaded artifact %s for job %s", atype, jobid)
+
+                            # Ask the vendor plugin for a decoded view. The raw
+                            # artifact is already stored above, so this is
+                            # additive: no parse can cost the job its results.
+                            try:
+                                parsed = vendor_plugin.parse_artifact(atype, resp.content)
+                            except Exception as e:
+                                logger.warning(
+                                    "Vendor could not parse artifact %s for job %s: %s",
+                                    atype,
+                                    jobid,
+                                    e,
+                                )
+                                parsed = None
+                            if parsed is not None:
+                                try:
+                                    artifact_locations[atype + " (parsed)"] = (
+                                        upload_parsed_artifact(
+                                            uploader, username, jobid, atype, parsed
+                                        )
+                                    )
+                                    logger.info(
+                                        "Uploaded parsed view of %s for job %s", atype, jobid
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "Could not upload parsed view of %s for job %s: %s",
+                                        atype,
+                                        jobid,
+                                        e,
+                                    )
                         else:
                             logger.debug(
                                 "Artifact %s not found for job %s, status %s",
@@ -338,6 +374,27 @@ def process_once(vendor_plugin, site_plugin):
                 pass
 
 
+def _wait_for_next_cycle(loop_start: float, sleep_time: int) -> None:
+    """Sleep out the remainder of a cycle, one second at a time.
+
+    Timed on the monotonic clock, never the wall clock. A backwards NTP
+    correction landing between ``loop_start`` and here makes a wall-clock
+    ``elapsed`` negative, and ``remaining`` then inflates by the whole size of
+    the step: the reporter goes quiet, logging nothing, and every job it has
+    not yet finalised stays unfinalised until it wakes. Seen on a VM corrected
+    shortly after boot — two cycles, then hours of silence.
+
+    The one-second steps are what makes shutdown prompt: ``_should_terminate``
+    is set from a signal handler, and this checks it between them.
+    """
+    elapsed = time.monotonic() - loop_start
+    remaining = max(0, sleep_time - int(elapsed))
+    for _ in range(remaining):
+        if _should_terminate:
+            break
+        time.sleep(1)
+
+
 def main():
     """Run the job-reporter in continuous mode with backoff and graceful shutdown."""
     logger.info("Starting job reporter in continuous mode...")
@@ -346,43 +403,15 @@ def main():
     vendor_plugin = load_vendor_plugin(settings)
     site_plugin = load_site_plugin(settings)
 
-    # Build machine headers for calibration polling
-    machine_headers = vendor_plugin.build_upstream_headers({})
-
-    # Calibration polling cadence is owned by the vendor plugin.
-    calibration_poll_seconds = vendor_plugin.get_calibration_poll_interval()
+    # Calibration polling is not done here: it runs in its own container
+    # (middleware.calibration_poller), with its own credential and cadence.
 
     consecutive_errors = 0
-    last_calibration_poll = 0
 
     while not _should_terminate:
-        loop_start = time.time()
+        loop_start = time.monotonic()
         try:
             process_once(vendor_plugin, site_plugin)
-
-            # Periodically run calibration polling via vendor plugin
-            now = time.time()
-            if now - last_calibration_poll >= calibration_poll_seconds:
-                try:
-                    cal_uploader = S3Uploader(
-                        minio_server_url=MINIO_SERVER_URL,
-                        bucket_name=BUCKET_NAME,
-                        app_user=APP_USER,
-                        app_password=APP_PASSWORD,
-                    )
-                    vendor_plugin.process_calibration_runs(
-                        machine_url=MACHINE_URL,
-                        headers=machine_headers,
-                        uploader=cal_uploader,
-                        db_init_fn=init_db,
-                        timeout=HTTP_TIMEOUT,
-                        verify_tls=VERIFY_TLS,
-                    )
-                except Exception as e:
-                    logger.exception("Calibration: unhandled error in polling: %s", e)
-                finally:
-                    last_calibration_poll = now
-
             consecutive_errors = 0
             sleep_time = LOOP_SLEEP_SECONDS
         except Exception as e:
@@ -404,12 +433,7 @@ def main():
                 )
                 sys.exit(1)
 
-        elapsed = time.time() - loop_start
-        remaining = max(0, sleep_time - int(elapsed))
-        for _ in range(remaining):
-            if _should_terminate:
-                break
-            time.sleep(1)
+        _wait_for_next_cycle(loop_start, sleep_time)
 
     logger.info("Job reporter stopped.")
 

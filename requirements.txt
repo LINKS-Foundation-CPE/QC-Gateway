@@ -9,3 +9,8 @@ minio==7.2.0
 redis==5.0.7
 requests==2.32.3
 prometheus-client==0.17.0
+
+# Vendor wire formats: the IQM sweep artifacts are protobuf, and this is IQM's
+# own definition package. Imported only by middleware/vendors/iqm/, so the core
+# stays free of vendor formats.
+iqm-data-definitions==3.0

@@ -27,12 +27,21 @@ class SparkJobAuthorizationChecker:
         project_name: str | None = None,
         extra_headers: dict[str, str] | None = None,
         timeout: float = 10.0,
+        job_type: str | None = None,
     ) -> JobAuthorizationResult:
         """Call /jobAuthorizer on the portal to check if the job is allowed."""
         try:
             payload = {"username": username}
             if project_name is not None:
                 payload["project_name"] = project_name
+            # Only sent when the vendor plugin classified the request. A portal
+            # that predates this ignores the extra field, and one that expects
+            # it treats its absence as the ordinary circuit path — so the two
+            # sides can be deployed in either order.
+            if job_type:
+                payload["job_type"] = job_type
+
+            logger.debug("Authorization payload for %s: %s", username, payload)
 
             async with httpx.AsyncClient() as client:
                 resp = await client.post(

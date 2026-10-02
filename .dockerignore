@@ -1,0 +1,34 @@
+# Keep the image build context small and free of runtime data.
+# The deploy directory accumulates state (MinIO artifacts, release mirrors,
+# SWAG config) that COPY . . would otherwise bake into the images — this
+# grew the build context to ~800 MB and deploy times from ~80 s to >45 min.
+.git
+.gitignore
+config
+data
+minio-data
+iqm-releases-mirror
+openapi-docs
+static
+.env
+.env.dev
+*.log
+*.sqlite
+*.sqlite3
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+*.egg-info
+build
+dist
+.vscode
+.idea
+.DS_Store
+docs
+minio-data*

@@ -38,14 +38,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from middleware.authentication import get_current_user
+from middleware.authentication import authenticate
 from middleware.authorization import RoleAuthorizationChecker
 from middleware.concurrency import ConcurrencyLimiter
 from middleware.config import Settings
 from middleware.db import log_job
 from middleware.minio import S3Uploader
 from middleware.plugins.interfaces import SitePlugin, VendorPlugin
-from middleware.plugins.loader import load_site_plugin, load_vendor_plugin
+from middleware.plugins.loader import (
+    load_auth_plugins,
+    load_policy_plugin,
+    load_site_plugin,
+    load_vendor_plugin,
+)
 from middleware.utils import build_json_response, build_raw_response, filter_response_headers
 
 logging.basicConfig(
@@ -61,6 +66,26 @@ logger.warning("middleware starting (mode=%s, jwks=%s)", settings.MIDDLEWARE_MOD
 from middleware.artifacts import upload_artifact_from_response
 from middleware.job_capture import upload_submitted_circuit
 from middleware.job_counters import queue_metrics_worker
+
+# Headers of the machine request that must not be copied onto a call the
+# gateway makes itself. What a site plugin needs from the caller is identity —
+# Authorization above all; what it must not inherit is the framing of a body it
+# is not sending. httpx fills its own content headers in with `setdefault`, so a
+# forwarded `content-type` survives and describes the wrong payload: the portal
+# then declines to parse the plugin's JSON and sees an empty body, which is
+# indistinguishable from a submission that claimed nothing.
+UNFORWARDABLE_REQUEST_HEADERS = frozenset(
+    {
+        "host",
+        "content-length",
+        "content-type",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "expect",
+        "accept-encoding",
+    }
+)
 
 # Module-level references populated in lifespan
 role_checker: RoleAuthorizationChecker | None = None
@@ -106,6 +131,10 @@ async def lifespan(app: FastAPI):
         app.state.redis = None
         redis_client = None
 
+    # Auth plugins are loaded after Redis, so a plugin whose tokens live on
+    # the bus gets a live client in its constructor instead of retrying later.
+    auth_plugins = load_auth_plugins(settings)
+
     # Initialize concurrency limiter
     concurrency_limiter = ConcurrencyLimiter(
         redis_client=app.state.redis,
@@ -116,6 +145,8 @@ async def lifespan(app: FastAPI):
     # Store on app.state
     app.state.vendor_plugin = vendor_plugin
     app.state.site_plugin = site_plugin
+    app.state.auth_plugins = auth_plugins
+    app.state.policy_plugin = load_policy_plugin(settings, concurrency_limiter)
     app.state.routes_config = routes_config
     app.state.concurrency_limiter = concurrency_limiter
 
@@ -187,7 +218,11 @@ async def proxy_and_capture(request: Request, call_next):
 
     logger.info("Request: %s %s", request.method, request.url.path)
     try:
-        user = await get_current_user(request)
+        user = await authenticate(
+            request,
+            request.app.state.auth_plugins,
+            settings.STRICT_PREFIX_MODE,
+        )
     except HTTPException as e:
         logger.warning(
             "Auth failed for %s %s: %s (status=%s)",
@@ -231,7 +266,7 @@ async def proxy_and_capture(request: Request, call_next):
             auth_headers = {
                 k: v
                 for k, v in request.headers.items()
-                if k.lower() not in ["host", "content-length"]
+                if k.lower() not in UNFORWARDABLE_REQUEST_HEADERS
             }
 
             auth_result = await site_plugin.authorize_job(
@@ -239,6 +274,7 @@ async def proxy_and_capture(request: Request, call_next):
                 project_name=submission.project,
                 extra_headers=auth_headers,
                 timeout=float(settings.UPSTREAM_TIMEOUT),
+                job_type=submission.job_type or None,
             )
 
             if not auth_result.is_authorized:
@@ -247,42 +283,27 @@ async def proxy_and_capture(request: Request, call_next):
                     status_code=auth_result.status_code or 403, content=auth_result.error_detail
                 )
 
-    # Concurrency limiting (production mode only)
-    reservation_result = None
+    # Submission-time policy: quota / budget / concurrency (production only)
+    policy_decision = None
     if settings.MIDDLEWARE_MODE == "production" and should_auth_and_log:
         username_val = getattr(user, "username", None)
         logger.info("Extracted shots from body: %s", submission.shots)
         logger.info("Counted circuits in body: %s", submission.circuits)
 
-        concurrency_limiter_inst = getattr(app.state, "concurrency_limiter", None)
-        if concurrency_limiter_inst and username_val:
-            reservation_result = concurrency_limiter_inst.try_reserve(
-                username=username_val,
-                shots=submission.shots,
-                circuits=submission.circuits,
-                job_type=submission.job_type,
-            )
-
-            if not reservation_result.allowed:
-                logger.warning("User %s exceeded concurrent submission limit", username_val)
-                if submission.job_type == "sweep":
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "detail": f"Max concurrent sweeps reached ({settings.MAX_CONCURRENT_SWEEPS}) for user {username_val}"
-                        },
-                    )
-                else:
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "detail": f"Max concurrent shots reached ({settings.MAX_CONCURRENT_SHOTS}) for user {username_val}"
-                        },
-                    )
-
-            logger.info(
-                "Active shots for user %s: %s", username_val, reservation_result.shots_after
-            )
+        policy_plugin_inst = getattr(app.state, "policy_plugin", None)
+        if policy_plugin_inst and username_val:
+            policy_decision = await policy_plugin_inst.check_submission(user, submission)
+            if not policy_decision.allowed:
+                logger.warning(
+                    "Policy %s denied submission for %s: %s",
+                    policy_plugin_inst.name,
+                    username_val,
+                    policy_decision.reason,
+                )
+                return JSONResponse(
+                    status_code=policy_decision.status_code,
+                    content={"detail": policy_decision.reason},
+                )
 
     # Proxy to upstream
     try:
@@ -316,6 +337,13 @@ async def proxy_and_capture(request: Request, call_next):
             sub_result = vendor_plugin.parse_submission_response(response_body)
             jobid = sub_result.job_id
             artifact_types = sub_result.artifact_types
+
+            # The machine accepted it: whatever policy reserved is now
+            # attributable to a real job.
+            if policy_decision and policy_decision.allowed:
+                policy_plugin_inst = getattr(app.state, "policy_plugin", None)
+                if policy_plugin_inst:
+                    await policy_plugin_inst.on_submission_accepted(policy_decision, jobid)
 
             if jobid and artifact_types:
                 logger.info("Upstream returned initial artifacts: %s", artifact_types)
@@ -404,14 +432,11 @@ async def proxy_and_capture(request: Request, call_next):
                         status_code=502, content={"detail": f"JobReport API error: {e!s}"}
                     )
         else:
-            # Rollback counters on failure
-            if reservation_result and reservation_result.allowed:
-                username_val = getattr(user, "username", None)
-                concurrency_limiter_inst = getattr(app.state, "concurrency_limiter", None)
-                if concurrency_limiter_inst and username_val:
-                    concurrency_limiter_inst.rollback(
-                        username_val, reservation_result.pre_increment_id
-                    )
+            # Give the reserved capacity back: the machine refused the job.
+            if policy_decision and policy_decision.allowed:
+                policy_plugin_inst = getattr(app.state, "policy_plugin", None)
+                if policy_plugin_inst:
+                    await policy_plugin_inst.rollback(policy_decision)
             logger.debug("Upstream response status: %s", upstream_response.status_code)
             logger.debug("Upstream response body: %s", response_body)
 
@@ -433,12 +458,11 @@ async def proxy_and_capture(request: Request, call_next):
             return build_raw_response(upstream_response)
 
     except httpx.RequestError as e:
-        # Rollback counter on request exception
-        if reservation_result and reservation_result.allowed:
-            username_val = getattr(user, "username", None)
-            concurrency_limiter_inst = getattr(app.state, "concurrency_limiter", None)
-            if concurrency_limiter_inst and username_val:
-                concurrency_limiter_inst.rollback(username_val, reservation_result.pre_increment_id)
+        # Same, for a submission that never reached the machine.
+        if policy_decision and policy_decision.allowed:
+            policy_plugin_inst = getattr(app.state, "policy_plugin", None)
+            if policy_plugin_inst:
+                await policy_plugin_inst.rollback(policy_decision)
         logger.error("Upstream API error: %s", str(e), exc_info=True)
         return JSONResponse(status_code=502, content={"detail": f"Upstream API error: {e!s}"})
 

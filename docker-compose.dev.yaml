@@ -1,0 +1,239 @@
+# Development stack — no SWAG, no FQDN, no CA-issued certificates required.
+#
+# Standalone compose file (do NOT combine with docker-compose.yaml).
+# Every published port is on 0.0.0.0 and falls in the 8000-9000 range so the
+# stack is reachable on a bare IP (e.g. a throwaway dev VM). All published
+# ports speak HTTPS behind the tls-proxy service, using the self-signed dev
+# cert shared with the dev Keycloak (keycloak-deployment repo).
+#
+# Quick start:
+#   cp env.dev.example .env.dev        # then edit: host IP, machine URL, tokens
+#   docker compose -f docker-compose.dev.yaml up -d --build
+#
+# See docs/DEV_DEPLOYMENT.md for the full walkthrough (quantum-api, dashboard).
+#
+# Port map (host):
+#   8000  QC Gateway (fastapi-proxy)
+#   8080  quantum-dashboard dev server (optional, profile "dashboard")
+#   8901  MinIO console
+#   8940  jobs results portal (static)
+#   9000  MinIO S3 API (public artifact URLs point here)
+#   [8500 quantum-api — started from its own repo, see docs/DEV_DEPLOYMENT.md]
+
+services:
+  fastapi-proxy:
+    build: .
+    image: fastapi-middleware:dev
+    container_name: fastapi-middleware-dev
+    environment:
+      - TZ=Europe/Rome
+      - VENDOR_PLUGIN=iqm
+      - SITE_PLUGIN=spark
+      - LOG_LEVEL=DEBUG
+      - POSTGRES_DB=jobproxy
+      - POSTGRES_USER=jobproxy
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    env_file:
+      - .env.dev
+    volumes:
+      # Self-signed dev cert dir (shared with the dev Keycloak; see
+      # keycloak-deployment repo). SSL_CERT_FILE / REQUESTS_CA_BUNDLE in
+      # .env.dev point into it; harmless when unset.
+      - ${KEYCLOAK_CERT_PATH:-../keycloak-deployment/certs}:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  reporter:
+    build: .
+    image: fastapi-middleware:dev
+    container_name: job-reporter-dev
+    command: ["python", "-u", "-m", "middleware.job_reporter"]
+    volumes:
+      - ${KEYCLOAK_CERT_PATH:-../keycloak-deployment/certs}:/certs:ro
+    environment:
+      - TZ=Europe/Rome
+      - VENDOR_PLUGIN=iqm
+      - SITE_PLUGIN=spark
+      - POSTGRES_DB=jobproxy
+      - POSTGRES_USER=jobproxy
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - JOB_REPORTER_INTERVAL=10
+      - JOB_REPORTER_HTTP_TIMEOUT=30
+      - JOB_REPORTER_VERIFY_TLS=false
+    env_file:
+      - .env.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # See docker-compose.yaml: calibration runs in its own container so the
+  # administrator token (ADMIN_IQM_TOKEN in .env.dev) stays out of the reporter.
+  calibration-poller:
+    build: .
+    image: fastapi-middleware:dev
+    container_name: calibration-poller-dev
+    command: ["python", "-u", "-m", "middleware.calibration_poller"]
+    environment:
+      - TZ=Europe/Rome
+      - VENDOR_PLUGIN=iqm
+      - SITE_PLUGIN=spark
+      - POSTGRES_DB=jobproxy
+      - POSTGRES_USER=jobproxy
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - JOB_REPORTER_HTTP_TIMEOUT=120
+      - JOB_REPORTER_VERIFY_TLS=false
+    env_file:
+      - .env.dev
+    # Like the reporter: it uploads to the object store and reaches Keycloak's
+    # host over the self-signed dev cert, which SSL_CERT_FILE in .env.dev
+    # points at — without the mount every upload fails with FileNotFoundError.
+    volumes:
+      - ${KEYCLOAK_CERT_PATH:-../keycloak-deployment/certs}:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    container_name: jobs-local-db-dev
+    environment:
+      TZ: Europe/Rome
+      POSTGRES_DB: jobproxy
+      POSTGRES_USER: jobproxy
+      # POSTGRES_PASSWORD comes from .env.dev (env_file) — do not set it here:
+      # `environment:` values win over env_file, and ${...} interpolation reads
+      # the shell, not .env.dev, so a literal here would desync DB and clients.
+    env_file:
+      - .env.dev
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobproxy -d jobproxy"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: jobs-redis-dev
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Same layout as production.
+  rustfs:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    container_name: rustfs-job-data
+    environment:
+      - TZ=Europe/Rome
+    env_file:
+      - .env.dev
+    volumes:
+      - ${MINIO_STORAGE_PATH:-./minio-data}/rustfs:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 20s
+      timeout: 20s
+      retries: 3
+    depends_on:
+      rustfs-data-owner:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  rustfs-data-owner:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    user: "0:0"
+    entrypoint: ["chown", "10001:10001", "/data"]
+    volumes:
+      - ${MINIO_STORAGE_PATH:-./minio-data}/rustfs:/data
+    restart: "no"
+
+  rustfs-init:
+    build: ./rustfs-init
+    container_name: rustfs-init-dev
+    environment:
+      - STORE_ENDPOINT=http://rustfs:9000
+    env_file:
+      - .env.dev
+    volumes:
+      - ${MINIO_STORAGE_PATH:-./minio-data}:/storage:ro
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
+  # Static jobs results viewer, served by SWAG in production (jobs.<domain>).
+  # JOBS_PORTAL_URL in .env.dev must point at this service.
+  jobs-portal:
+    image: nginx:alpine
+    container_name: jobs-portal-dev
+    volumes:
+      - ./middleware/vendors/iqm/jobs-portal:/usr/share/nginx/html:ro
+    restart: unless-stopped
+
+  # Optional: quantum-dashboard dev server (vite), enable with:
+  #   docker compose -f docker-compose.dev.yaml --profile dashboard up -d
+  # Requires ../quantum-dashboard to be checked out and VITE_* vars in .env.dev.
+  dashboard:
+    image: node:22-alpine
+    container_name: quantum-dashboard-dev
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 8080"
+    env_file:
+      - .env.dev
+    volumes:
+      - ../quantum-dashboard:/app
+    profiles:
+      - dashboard
+    restart: unless-stopped
+
+  # TLS termination for every published port (self-signed dev cert shared
+  # with the dev Keycloak). Upstream services stay plain HTTP on the compose
+  # network; quantum-api (:8500) and Keycloak (:8843) terminate TLS on their own.
+  tls-proxy:
+    image: nginx:alpine
+    container_name: tls-proxy-dev
+    volumes:
+      - ./config-dev/nginx-tls.conf:/etc/nginx/nginx.conf:ro
+      - ${KEYCLOAK_CERT_PATH:-../keycloak-deployment/certs}:/certs:ro
+    ports:
+      - "8000:8000"   # QC Gateway
+      - "8080:8080"   # dashboard dev server (profile "dashboard")
+      - "8901:8901"   # object store console
+      - "8940:8940"   # jobs results portal
+      - "9000:9000"   # object store S3 API (RustFS)
+    restart: unless-stopped
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:

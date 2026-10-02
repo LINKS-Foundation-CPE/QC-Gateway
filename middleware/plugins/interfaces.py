@@ -10,9 +10,106 @@ from middleware.plugins.datatypes import (
     JobReportResult,
     JobStatusResult,
     JobSubmission,
+    PolicyDecision,
+    Principal,
     RoutesConfig,
     SubmissionResult,
 )
+
+
+class AuthError(Exception):
+    """Definitive authentication failure — stop the chain and return 401.
+
+    Distinct from a plugin returning ``None``, which means "not my token, try
+    the next one". Raising means the plugin claimed the token and it failed,
+    so falling through to another plugin would be wrong: it would turn a
+    specific, reportable failure into a generic one.
+    """
+
+    def __init__(self, detail: str, status_code: int = 401) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
+@runtime_checkable
+class AuthPlugin(Protocol):
+    """Contract for a token-validating authentication backend.
+
+    Routing, implemented in :func:`middleware.authentication.authenticate`:
+
+    1. A token matching a plugin's declared prefix goes to that plugin alone.
+       A prefix is a hard claim — there is no fallback, because a token that
+       announces its issuer and then fails is a failure, not a near miss.
+    2. A token with no recognised prefix is offered to the prefix-less plugins
+       in configuration order, and the first ``Principal`` wins.
+
+    That ordering is what lets a deployment add a second token format without
+    touching the first: OIDC JWTs carry no prefix and stay in the fallback
+    chain, so an added prefix-owning plugin cannot shadow them.
+    """
+
+    @property
+    def name(self) -> str:
+        """Stable identifier, used in configuration and log lines."""
+        ...
+
+    @property
+    def prefixes(self) -> list[str]:
+        """Token prefixes owned by this plugin (e.g. ``["sqed_"]``).
+
+        An empty list means the plugin claims no prefix and participates in
+        the fallback chain.
+        """
+        ...
+
+    async def validate(self, token: str) -> Principal | None:
+        """Validate ``token``.
+
+        Return a ``Principal`` on success, ``None`` for "not my token", and
+        raise ``AuthError`` when the token is this plugin's and is bad.
+        """
+        ...
+
+
+@runtime_checkable
+class PolicyPlugin(Protocol):
+    """Contract for submission-time policy: quota, budget, concurrency.
+
+    Answers "may this principal submit *this*, right now" — which is a
+    deployment question, not a property of the machine. One site limits
+    concurrent shots per user with a flat number; another derives the limit
+    from licenses a batch scheduler has already reserved.
+
+    Three calls rather than one, because a reservation has to be undoable:
+    capacity is taken before the request is proxied, and the machine may still
+    refuse it.
+    """
+
+    @property
+    def name(self) -> str:
+        """Stable identifier, used in configuration and log lines."""
+        ...
+
+    async def check_submission(
+        self, principal: Principal, submission: JobSubmission
+    ) -> PolicyDecision:
+        """Called before proxying. A denied decision blocks the request."""
+        ...
+
+    async def on_submission_accepted(self, decision: PolicyDecision, job_id: str) -> None:
+        """Called once the machine has accepted the submission (2xx).
+
+        The commit point: whatever ``check_submission`` reserved is now
+        attributable to a real job. ``decision`` is the object that call
+        returned, so a plugin reads its own handles out of
+        ``decision.reservation`` instead of keeping them on the instance.
+        """
+        ...
+
+    async def rollback(self, decision: PolicyDecision) -> None:
+        """Undo the reservation: the machine refused, or the call failed."""
+        ...
 
 
 @runtime_checkable
@@ -56,6 +153,20 @@ class VendorPlugin(Protocol):
         """Query the vendor API for authoritative job status."""
         ...
 
+    def parse_artifact(self, artifact_type: str, data: bytes) -> Any | None:
+        """Optionally decode a binary artifact into a JSON-serialisable view.
+
+        The core stores every artifact verbatim and does not know what any of
+        them mean. A vendor whose artifacts are binary can return a decoded,
+        display-sized view here, which the core stores alongside the raw bytes
+        so a viewer needs no vendor parser of its own.
+
+        Return ``None`` for anything this plugin does not decode. Must not
+        raise: the raw artifact is already stored by the time this is called,
+        and a parse failure must not cost the job its results.
+        """
+        ...
+
     def get_artifact_url(self, job_id: str, artifact_type: str) -> str:
         """Return the relative URL path to fetch a specific artifact."""
         ...
@@ -76,6 +187,15 @@ class VendorPlugin(Protocol):
         """Return the cadence (seconds) at which the core worker should call
         ``process_calibration_runs``. Vendors without calibration may return a
         large value or ``0`` to effectively disable polling.
+        """
+        ...
+
+    def build_calibration_headers(self) -> dict[str, str]:
+        """Headers for the calibration endpoints.
+
+        Separate from ``build_upstream_headers`` because a machine may demand more
+        privilege for calibration data than for job traffic — IQM now does — and
+        that credential must not ride along on user requests.
         """
         ...
 
@@ -121,8 +241,18 @@ class SitePlugin(Protocol):
         project_name: str | None,
         extra_headers: dict[str, str] | None,
         timeout: float,
+        job_type: str | None = None,
     ) -> JobAuthorizationResult:
-        """Check whether a user is allowed to submit a job."""
+        """Check whether a user is allowed to submit a job.
+
+        ``job_type`` is the vendor plugin's classification of the request —
+        for IQM, ``circuit`` or ``sweep``. It is passed so a site can make the
+        decision depend on *what* is being submitted and not only on who is
+        submitting and to which project; the sweep path is privileged.
+
+        Keyword-only in effect and defaulted, so a site plugin written before
+        this existed still satisfies the contract.
+        """
         ...
 
     async def report_job_async(self, job_id: str, payload: dict[str, Any]) -> JobReportResult:
