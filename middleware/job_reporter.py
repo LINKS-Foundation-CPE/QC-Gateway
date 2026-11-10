@@ -172,7 +172,9 @@ def process_once(vendor_plugin, site_plugin):
                             except Exception:
                                 pass
                             if added == 1:
-                                decrement_user_counters(r, username, circuits_count, shots_val)
+                                decrement_user_counters(
+                                    r, username, circuits_count, shots_val, job_type
+                                )
                                 logger.info(
                                     "Decremented active counter for %s (job %s)", username, jobid
                                 )

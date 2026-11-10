@@ -54,7 +54,7 @@ Shipped implementations:
 | Plugin | Prefix | Credential |
 |---|---|---|
 | `keycloak` (`middleware/auth/keycloak.py`) | none | RS256 JWT against the realm's JWKS; roles from `realm_access.roles` |
-| `sqed` (`middleware/auth/sqed.py`) | `sqed_` | per-job token on a Redis hash `qpu:token:<token>`, one field per live SLURM job |
+| `sqed` (`middleware/auth/sqed.py`) | `sqed_` | per-job token, looked up as the Redis hash `qpu:token:<sha256(token)>` (lowercase hex; the token itself is never stored), one field per live SLURM job |
 
 The `sqed` plugin only ever **reads** Redis — the `qpu:*` namespace belongs to
 whatever provisions the tokens. A token is valid while at least one field is
@@ -145,7 +145,7 @@ from middleware.plugins.datatypes import JobAuthorizationResult, JobReportResult
 ```
 
 Key methods:
-- `authorize_job(username, project_name, ...) -> JobAuthorizationResult`
+- `authorize_job(principal, project_name, ...) -> JobAuthorizationResult` — receives the whole `Principal`, so a site can branch on `principal.auth_source`
 - `report_job_async(job_id, payload) -> JobReportResult`
 - `report_job_sync(job_id, payload) -> JobReportResult`
 - `send_initial_report(payload) -> JobReportResult`
@@ -325,7 +325,7 @@ from middleware.config import Settings
 site = SparkSitePlugin(Settings())
 
 # Authorize a job
-result = await site.authorize_job("alice", project_name="quantum-test", ...)
+result = await site.authorize_job(principal, project_name="quantum-test", ...)
 if result.is_authorized:
     print("Job authorized")
 
@@ -401,7 +401,7 @@ class HPCSitePlugin:
     def __init__(self, settings):
         self._slurm_api = settings.SLURM_API_URL
 
-    async def authorize_job(self, username, project_name, extra_headers, timeout):
+    async def authorize_job(self, principal, project_name, extra_headers, timeout, job_type=None):
         # Check SLURM allocation/budget
         ...
 
@@ -447,7 +447,7 @@ async def submit_job(username, request_body, path):
     submission = vendor.parse_submission_request(request_body, path)
 
     # Authorize via site plugin
-    auth = await site.authorize_job(username, submission.project, {}, timeout=10)
+    auth = await site.authorize_job(principal, submission.project, {}, timeout=10)
     if not auth.is_authorized:
         return {"error": auth.error_detail}
 

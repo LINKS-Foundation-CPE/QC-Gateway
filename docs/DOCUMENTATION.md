@@ -31,9 +31,14 @@ ordered chain in `AUTH_PLUGINS`.
 
 - `keycloak` (default): RS256 JWTs verified against the realm's JWKS, roles
   from `realm_access.roles`. Claims no token prefix.
-- `sqed`: per-job tokens minted by a SLURM SPANK plugin onto a Redis bus, for
+- `sqed`: per-job tokens minted by a SLURM prolog onto a Redis bus, for
   deployments where submissions arrive from the scheduler rather than from a
-  person. Claims the `sqed_` prefix.
+  person. Claims the `sqed_` prefix. Redis holds only each token's SHA-256,
+  so reading Redis does not reveal a usable token. The tokens are minted by
+  the SLURM prolog/epilog scripts in
+  [Lagrange-prolog-epilog](https://github.com/LINKS-Foundation-CPE/Lagrange-prolog-epilog);
+  together with the `sqed` site plugin below they make up **Sqed**, the
+  *Slurm-based Quantum Execution Director*.
 
 A prefixed token is routed to its owning plugin alone; anything else is tried
 against the prefix-less plugins in order. Adding a prefixed plugin therefore
@@ -77,7 +82,16 @@ A site plugin encapsulates how a specific deployment site handles authorization 
 - **Job reporting**: sending job status reports and results to the site's tracking system
 - **Results URL construction**: building user-facing URLs for job results
 
-Currently available: **SPARK** (`middleware/sites/spark/`)
+Currently available:
+
+- **SPARK** (`middleware/sites/spark/`): the Lagrange portal. The default.
+- **sqed** (`middleware/sites/sqed/`): for an HPC cluster whose users submit
+  circuits from SLURM batch jobs, authenticated by the `sqed` auth plugin's
+  per-job tokens. Submissions from `sqed` principals are already authorized by
+  SLURM admission (the QPU license grant), so they skip the portal's
+  `/jobAuthorizer`; any other principal is authorized exactly as by SPARK, and
+  reporting and results URLs are SPARK's. A job is attributed to the SLURM
+  `--account` recorded in its token, not to whatever project the client names.
 
 ### Plugin Selection
 
@@ -113,7 +127,7 @@ The application is organized into a generic core, a plugin infrastructure layer,
 - **`middleware/config.py`**: Core configuration settings (authentication, upstream URL, Redis, MinIO, concurrency limits, plugin selectors). Vendor/site-specific settings live in their respective plugin config modules.
 - **`middleware/authorization.py`**: Generic role-based access control (`RoleAuthorizationChecker`). Initialized with route definitions from the vendor plugin.
 - **`middleware/authentication.py`**: Bearer-token authentication (`authenticate()`), which routes a token through the configured auth plugin chain rather than validating it here — nothing in this module knows what a JWT is.
-- **`middleware/auth/`**: The auth backends. `keycloak.py` (`KeycloakAuthPlugin`, OIDC JWTs verified against the realm's JWKS) and `sqed.py` (`SqedAuthPlugin`, per-job tokens a SLURM SPANK plugin puts on the Redis bus), with `sqed_config.py` for the latter's settings.
+- **`middleware/auth/`**: The auth backends. `keycloak.py` (`KeycloakAuthPlugin`, OIDC JWTs verified against the realm's JWKS) and `sqed.py` (`SqedAuthPlugin`, per-job tokens a SLURM prolog files on the Redis bus under their SHA-256), with `sqed_config.py` for the latter's settings.
 - **`middleware/concurrency.py`**: Per-user concurrency limits using Redis counters (`ConcurrencyLimiter`). Reached through the policy plugin, which owns the submission-time decision; the limiter itself only counts.
 - **`middleware/policy/`**: The submission-policy backends. `passthrough.py` (`PassthroughPolicyPlugin`, the flat per-user limits this gateway has always applied) and `shot_budget.py` (`ShotBudgetPolicyPlugin`, a concurrent-shot budget derived from the licenses a batch scheduler reserved), with `shot_budget_config.py` for the latter's settings.
 - **`middleware/db.py`**: Database initialization and job logging (PostgreSQL).
@@ -145,6 +159,21 @@ The application is organized into a generic core, a plugin infrastructure layer,
 - **`authorization.py`**: Job authorization via the SPARK portal's `/jobAuthorizer` endpoint.
 - **`reporting.py`**: Job reporting via the SPARK portal's `/jobReport` endpoint (PUT-first, POST-fallback).
 - **`config.py`**: SPARK-specific settings (`PORTAL_API_HOST`, `BASE_DOMAIN`).
+
+### HPC-only deployment profile
+
+To accept submissions only from SLURM jobs, with no direct web-API path:
+
+```
+AUTH_PLUGINS=sqed          # only per-job cluster tokens
+STRICT_PREFIX_MODE=true    # a token without the sqed_ prefix is refused, not tried elsewhere
+SITE_PLUGIN=sqed
+```
+
+`tests/test_hpc_only_profile.py` asserts that this closes the OIDC path rather
+than merely leaving it unused, and that a deployment not setting these values is
+unchanged. The tokens are provisioned by the SLURM prolog/epilog, which file each
+job's record in Redis under the token's SHA-256 (see the `sqed` auth plugin).
 
 ## Flow
 

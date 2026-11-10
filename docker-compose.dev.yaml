@@ -28,7 +28,11 @@ services:
     environment:
       - TZ=Europe/Rome
       - VENDOR_PLUGIN=iqm
-      - SITE_PLUGIN=spark
+      # SITE_PLUGIN, AUTH_PLUGINS and POLICY_PLUGIN come from .env.dev. Do NOT
+      # list them here: an `environment:` entry wins over `env_file:`, and the
+      # `${SITE_PLUGIN:-spark}` default that used to sit here silently shadowed
+      # .env.dev's `SITE_PLUGIN=sqed` — which is how the dev stack came to run
+      # the spark site plugin while its own env said sqed.
       - LOG_LEVEL=DEBUG
       - POSTGRES_DB=jobproxy
       - POSTGRES_USER=jobproxy
@@ -63,7 +67,11 @@ services:
     environment:
       - TZ=Europe/Rome
       - VENDOR_PLUGIN=iqm
-      - SITE_PLUGIN=spark
+      # SITE_PLUGIN, AUTH_PLUGINS and POLICY_PLUGIN come from .env.dev. Do NOT
+      # list them here: an `environment:` entry wins over `env_file:`, and the
+      # `${SITE_PLUGIN:-spark}` default that used to sit here silently shadowed
+      # .env.dev's `SITE_PLUGIN=sqed` — which is how the dev stack came to run
+      # the spark site plugin while its own env said sqed.
       - POSTGRES_DB=jobproxy
       - POSTGRES_USER=jobproxy
       - POSTGRES_HOST=postgres

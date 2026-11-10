@@ -237,13 +237,17 @@ class SitePlugin(Protocol):
 
     async def authorize_job(
         self,
-        username: str,
+        principal: Principal,
         project_name: str | None,
         extra_headers: dict[str, str] | None,
         timeout: float,
         job_type: str | None = None,
     ) -> JobAuthorizationResult:
-        """Check whether a user is allowed to submit a job.
+        """Check whether a principal is allowed to submit a job.
+
+        Receives the full ``Principal`` so site plugins can branch on the
+        auth source (e.g. Sqed principals are already authorized by SLURM
+        admission and skip the portal check).
 
         ``job_type`` is the vendor plugin's classification of the request —
         for IQM, ``circuit`` or ``sweep``. It is passed so a site can make the

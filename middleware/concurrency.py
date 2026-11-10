@@ -26,6 +26,21 @@ import redis
 logger = logging.getLogger(__name__)
 
 
+def counter_keys(username: str) -> tuple[str, str, str]:
+    """Redis keys of a user's counters: active shots, active jobs, active sweeps.
+
+    ``jobs:active`` counts every job in flight, circuits and sweeps alike (the
+    metrics gauge sums it). ``sweeps:active`` counts sweeps only, and is what the
+    sweep limit is checked against: checking the shared job count meant circuit
+    jobs in flight used up the sweep limit.
+    """
+    return (
+        f"shots:active:{username}",
+        f"jobs:active:{username}",
+        f"sweeps:active:{username}",
+    )
+
+
 class ConcurrencyLimiter:
     """Enforces per-user concurrency limits using Redis counters.
 
@@ -111,55 +126,56 @@ class ConcurrencyLimiter:
         # Calculate total shot increment (shots x circuits)
         shot_increment = shots_val * circuits_val if shots_val and circuits_val else 1
 
-        shot_counter_key = f"shots:active:{username}"
-        job_counter_key = f"jobs:active:{username}"
+        shot_counter_key, job_counter_key, sweep_counter_key = counter_keys(username)
 
+        # Expiry is refreshed only when a submission is admitted. Refreshing it
+        # on every attempt, refused ones included, meant a user who kept
+        # retrying against a counter left high by an unreleased job never saw
+        # it expire.
         try:
             if is_sweep:
-                # Only increment job counter and enforce sweep limit when configured
-                new_job_count = self.redis_client.incr(job_counter_key)
-                self.redis_client.expire(job_counter_key, self.counter_ttl_seconds)
+                new_sweep_count = self.redis_client.incr(sweep_counter_key)
 
                 logger.info(
-                    "User %s: jobs=%s (sweep), sweep_limit=%s",
+                    "User %s: sweeps=%s, sweep_limit=%s",
                     username,
-                    new_job_count,
+                    new_sweep_count,
                     self.max_concurrent_sweeps,
                 )
 
                 if (
                     self.max_concurrent_sweeps is not None
-                    and new_job_count > self.max_concurrent_sweeps
+                    and new_sweep_count > self.max_concurrent_sweeps
                 ):
                     # Rollback and deny
-                    self.redis_client.decr(job_counter_key)
+                    self.redis_client.decr(sweep_counter_key)
                     logger.warning(
                         "User %s exceeded concurrent sweep limit (%s > %s)",
                         username,
-                        new_job_count,
+                        new_sweep_count,
                         self.max_concurrent_sweeps,
                     )
                     return ReservationResult(
                         allowed=False,
                         shots_after=None,
-                        jobs_after=new_job_count - 1,
+                        jobs_after=None,
                         pre_increment_id=None,
                         limit_exceeded=True,
                     )
 
+                new_job_count = self.redis_client.incr(job_counter_key)
+                self.redis_client.expire(sweep_counter_key, self.counter_ttl_seconds)
+                self.redis_client.expire(job_counter_key, self.counter_ttl_seconds)
                 return ReservationResult(
                     allowed=True,
                     shots_after=None,
                     jobs_after=new_job_count,
-                    pre_increment_id=("jobs", 1),
+                    pre_increment_id=("sweep", 1),
                 )
 
             # Non-sweep: increment both counters
             new_shot_count = self.redis_client.incrby(shot_counter_key, shot_increment)
-            self.redis_client.expire(shot_counter_key, self.counter_ttl_seconds)
-
             new_job_count = self.redis_client.incr(job_counter_key)
-            self.redis_client.expire(job_counter_key, self.counter_ttl_seconds)
 
             shot_limit = (
                 max_shots_override if max_shots_override is not None else self.max_concurrent_shots
@@ -195,6 +211,8 @@ class ConcurrencyLimiter:
                 )
 
             # Success
+            self.redis_client.expire(shot_counter_key, self.counter_ttl_seconds)
+            self.redis_client.expire(job_counter_key, self.counter_ttl_seconds)
             return ReservationResult(
                 allowed=True,
                 shots_after=new_shot_count,
@@ -227,8 +245,7 @@ class ConcurrencyLimiter:
             return False
 
         kind, amount = pre_increment_id
-        shot_counter_key = f"shots:active:{username}"
-        job_counter_key = f"jobs:active:{username}"
+        shot_counter_key, job_counter_key, sweep_counter_key = counter_keys(username)
 
         try:
             if kind == "shots":
@@ -240,11 +257,15 @@ class ConcurrencyLimiter:
                     self.redis_client.set(shot_counter_key, 0)
                 if new_job_count < 0:
                     self.redis_client.set(job_counter_key, 0)
-            elif kind == "jobs":
-                # Only decrement job counter (used for sweeps)
-                new_job_count = self.redis_client.decr(job_counter_key)
-                if new_job_count is not None and int(new_job_count) < 0:
-                    self.redis_client.set(job_counter_key, 0)
+            elif kind in ("sweep", "jobs"):
+                # A sweep holds the job count and the sweep count. "jobs" is
+                # the identifier reservations used before the sweep counter
+                # existed; it held the job count only.
+                keys = [job_counter_key] + ([sweep_counter_key] if kind == "sweep" else [])
+                for key in keys:
+                    new_val = self.redis_client.decr(key)
+                    if new_val is not None and int(new_val) < 0:
+                        self.redis_client.set(key, 0)
             else:
                 logger.warning("Unknown pre_increment_id kind: %s", kind)
                 return False

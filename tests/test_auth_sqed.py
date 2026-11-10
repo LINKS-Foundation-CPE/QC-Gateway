@@ -1,4 +1,8 @@
-"""SqedAuthPlugin against the qpu:token hash contract (fakeredis)."""
+"""SqedAuthPlugin against the qpu:token hash contract (fakeredis).
+
+Records are written the way the provisioner writes them: under the SHA-256 of
+the token (``token_key``), never under the token itself.
+"""
 
 import json
 import time
@@ -7,6 +11,7 @@ from types import SimpleNamespace
 import fakeredis
 import pytest
 
+from middleware.auth.sqed import token_key
 from middleware.plugins.interfaces import AuthError
 
 NOW = int(time.time())
@@ -54,7 +59,7 @@ async def test_prefix_is_declared(plugin):
 
 @pytest.mark.asyncio
 async def test_single_job_token(plugin):
-    plugin._redis.hset("qpu:token:sqed_aa", "101", _record(n_licenses=2))
+    plugin._redis.hset(token_key("sqed_aa"), "101", _record(n_licenses=2))
     principal = await plugin.validate("sqed_aa")
     assert principal.auth_source == "sqed"
     assert principal.username == "alice"
@@ -67,7 +72,7 @@ async def test_single_job_token(plugin):
 @pytest.mark.asyncio
 async def test_array_token_sums_licenses_over_live_fields(plugin):
     for job_id in ("201", "202", "203"):
-        plugin._redis.hset("qpu:token:sqed_bb", job_id, _record(n_licenses=1))
+        plugin._redis.hset(token_key("sqed_bb"), job_id, _record(n_licenses=1))
     principal = await plugin.validate("sqed_bb")
     assert principal.metadata["job_ids"] == ["201", "202", "203"]
     assert principal.metadata["n_licenses"] == 3
@@ -82,8 +87,8 @@ async def test_missing_token_is_401(plugin):
 
 @pytest.mark.asyncio
 async def test_drifted_expiry_is_filtered(plugin):
-    plugin._redis.hset("qpu:token:sqed_cc", "301", _record(expires=NOW - 10))
-    plugin._redis.hset("qpu:token:sqed_cc", "302", _record(n_licenses=4))
+    plugin._redis.hset(token_key("sqed_cc"), "301", _record(expires=NOW - 10))
+    plugin._redis.hset(token_key("sqed_cc"), "302", _record(n_licenses=4))
     principal = await plugin.validate("sqed_cc")
     assert principal.metadata["job_ids"] == ["302"]
     assert principal.metadata["n_licenses"] == 4
@@ -91,22 +96,22 @@ async def test_drifted_expiry_is_filtered(plugin):
 
 @pytest.mark.asyncio
 async def test_all_fields_drifted_expired_is_401(plugin):
-    plugin._redis.hset("qpu:token:sqed_dd", "401", _record(expires=NOW - 10))
+    plugin._redis.hset(token_key("sqed_dd"), "401", _record(expires=NOW - 10))
     with pytest.raises(AuthError):
         await plugin.validate("sqed_dd")
 
 
 @pytest.mark.asyncio
 async def test_username_falls_back_to_uid(plugin):
-    plugin._redis.hset("qpu:token:sqed_ee", "501", _record(username=None))
+    plugin._redis.hset(token_key("sqed_ee"), "501", _record(username=None))
     principal = await plugin.validate("sqed_ee")
     assert principal.username == "1000"
 
 
 @pytest.mark.asyncio
 async def test_malformed_record_is_skipped_not_fatal(plugin):
-    plugin._redis.hset("qpu:token:sqed_ff", "601", "not-json")
-    plugin._redis.hset("qpu:token:sqed_ff", "602", _record())
+    plugin._redis.hset(token_key("sqed_ff"), "601", "not-json")
+    plugin._redis.hset(token_key("sqed_ff"), "602", _record())
     principal = await plugin.validate("sqed_ff")
     assert principal.metadata["job_ids"] == ["602"]
 
@@ -147,7 +152,7 @@ class _StubHttp:
 async def test_roles_lookup_adds_pulla_user(plugin):
     plugin._settings.SQED_ROLES_LOOKUP_URL = "http://api.test/userRoles"
     plugin._http = _StubHttp(_StubResponse(200, {"roles": ["cortex_user", "pulla_user"]}))
-    plugin._redis.hset("qpu:token:sqed_rl1", "701", _record())
+    plugin._redis.hset(token_key("sqed_rl1"), "701", _record())
     principal = await plugin.validate("sqed_rl1")
     assert principal.roles == ["cortex_user", "pulla_user"]
     assert plugin._http.calls == ["http://api.test/userRoles/alice"]
@@ -157,7 +162,7 @@ async def test_roles_lookup_adds_pulla_user(plugin):
 async def test_roles_lookup_404_keeps_defaults(plugin):
     plugin._settings.SQED_ROLES_LOOKUP_URL = "http://api.test/userRoles"
     plugin._http = _StubHttp(_StubResponse(404))
-    plugin._redis.hset("qpu:token:sqed_rl2", "702", _record())
+    plugin._redis.hset(token_key("sqed_rl2"), "702", _record())
     principal = await plugin.validate("sqed_rl2")
     assert principal.roles == ["cortex_user"]
 
@@ -166,7 +171,7 @@ async def test_roles_lookup_404_keeps_defaults(plugin):
 async def test_roles_lookup_is_cached(plugin):
     plugin._settings.SQED_ROLES_LOOKUP_URL = "http://api.test/userRoles"
     plugin._http = _StubHttp(_StubResponse(200, {"roles": ["pulla_user"]}))
-    plugin._redis.hset("qpu:token:sqed_rl3", "703", _record())
+    plugin._redis.hset(token_key("sqed_rl3"), "703", _record())
     await plugin.validate("sqed_rl3")
     await plugin.validate("sqed_rl3")
     assert len(plugin._http.calls) == 1
@@ -175,7 +180,7 @@ async def test_roles_lookup_is_cached(plugin):
 @pytest.mark.asyncio
 async def test_roles_lookup_disabled_when_unset(plugin):
     plugin._http = _StubHttp(_StubResponse(200, {"roles": ["pulla_user"]}))
-    plugin._redis.hset("qpu:token:sqed_rl4", "704", _record())
+    plugin._redis.hset(token_key("sqed_rl4"), "704", _record())
     principal = await plugin.validate("sqed_rl4")
     assert principal.roles == ["cortex_user"]
     assert plugin._http.calls == []
@@ -184,15 +189,42 @@ async def test_roles_lookup_disabled_when_unset(plugin):
 @pytest.mark.asyncio
 async def test_account_is_exposed_as_metadata(plugin):
     """The SLURM --account travels to the core, which reports it as the project."""
-    plugin._redis.hset("qpu:token:sqed_acct", "301", _record(account="cin_proj_a"))
+    plugin._redis.hset(token_key("sqed_acct"), "301", _record(account="hpc_proj_a"))
     principal = await plugin.validate("sqed_acct")
-    assert principal.metadata["account"] == "cin_proj_a"
+    assert principal.metadata["account"] == "hpc_proj_a"
 
 
 @pytest.mark.asyncio
 async def test_account_absent_is_none_not_missing(plugin):
     """A record without an account must not make the key disappear: the core
     reads it unconditionally and falls back to the client-declared project."""
-    plugin._redis.hset("qpu:token:sqed_noacct", "302", _record())
+    plugin._redis.hset(token_key("sqed_noacct"), "302", _record())
     principal = await plugin.validate("sqed_noacct")
     assert principal.metadata["account"] is None
+
+
+def test_token_key_matches_the_contract_test_vector():
+    # The same vector is checked by the provisioner's own suite: the two sides
+    # must hash identically or no job authenticates.
+    assert token_key("sqed_0123456789abcdef0123456789abcdef") == (
+        "qpu:token:d076993cd936cbc3dd50a14d50a0cdeeabffd7146e6aa74bd956ee82be2cb02b"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_record_filed_under_the_plaintext_token_is_not_accepted(plugin):
+    # The pre-digest layout. Accepting it would keep a reader of Redis able
+    # to impersonate jobs, which is what hashing removes.
+    plugin._redis.hset("qpu:token:sqed_legacy", "801", _record())
+    with pytest.raises(AuthError):
+        await plugin.validate("sqed_legacy")
+
+
+@pytest.mark.asyncio
+async def test_a_digest_cannot_be_presented_as_a_token(plugin):
+    plugin._redis.hset(token_key("sqed_secret"), "802", _record())
+    digest = token_key("sqed_secret").removeprefix("qpu:token:")
+    with pytest.raises(AuthError):
+        await plugin.validate(digest)
+    with pytest.raises(AuthError):
+        await plugin.validate("sqed_" + digest)

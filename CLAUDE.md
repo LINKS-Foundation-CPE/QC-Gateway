@@ -199,12 +199,14 @@ commit at a time via `git cherry-pick`.
 ### What never goes on `public`
 
 Some paths are deployment machinery for *our* installation. They belong on
-`main` and must not be cherry-picked to `public`:
+`main` and must not be cherry-picked to `public`. (The FQDN-free dev stack —
+`docker-compose.dev.yaml`, `env.dev.example`, `config-dev/`,
+`docs/DEV_DEPLOYMENT.md` — **is** published since 2026.10.0: the public
+one-command install, Lagrange-stack-portable, runs it.)
 
 | Path | Why |
 |------|-----|
 | `.gitlab-ci.yml` | The deploy pipeline: our SSH targets, deploy directory, and the `DEV_*`/`PROD_*` CI variable names. Useless publicly and a description of our infrastructure. |
-| `docs/DEV_DEPLOYMENT.md`, `docker-compose.dev.yaml`, `env.dev.example`, `config-dev/` | Already excluded. The FQDN-free dev stack is documented for internal use; `portable-deployment` is the public equivalent. |
 
 Everything under `config/` **is** published, and is written to be
 deployment-agnostic: the vhost templates are named after the service they front

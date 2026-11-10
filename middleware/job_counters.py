@@ -3,11 +3,12 @@
 Moved from `app.job_reporter` to keep counter logic testable and reusable.
 Provides:
 - get_redis_client() -> connected redis.Redis | None
-- decrement_user_counters(r, username, circuits_count, shots_val)
+- decrement_user_counters(r, username, circuits_count, shots_val, job_type)
 """
 
 import redis
 
+from middleware.concurrency import counter_keys
 from middleware.config import settings
 
 REDIS_HOST = settings.REDIS_HOST
@@ -39,36 +40,39 @@ def get_redis_client():
         return None
 
 
-def decrement_user_counters(r, username, circuits_count, shots_val):
-    """Safely decrement per-user Redis counters (jobs and shots).
+def decrement_user_counters(r, username, circuits_count, shots_val, job_type=None):
+    """Release a finished job's hold on the per-user Redis counters.
 
-    Behaviour preserved from the original implementation in
-    `app.job_reporter`:
-    - decrement `jobs:active:{username}` by 1
-    - decrement `shots:active:{username}` by `shots * circuits` (or 1)
-    - clamp counters to 0 and perform best-effort logging on errors
+    Mirrors what admission took (``ConcurrencyLimiter.try_reserve``):
+    - every job: `jobs:active:{username}` by 1
+    - a sweep (``job_type == "sweep"``, or no shot count): `sweeps:active` by 1,
+      and the shot counter is left alone, since a sweep never added to it
+    - a circuit job: `shots:active:{username}` by `shots * circuits` (or 1)
+
+    Counters are clamped at 0, and errors are logged rather than raised.
     """
+    shot_key, job_key, sweep_key = counter_keys(username)
+    is_sweep = job_type == "sweep" or not shots_val
     try:
-        # Decrement job counter (one job finished)
-        key = f"jobs:active:{username}"
-        try:
-            new_val = r.decr(key)
-        except Exception:
-            new_val = None
-        if new_val is not None and int(new_val) < 0:
-            r.set(key, 0)
+        keys = [job_key] + ([sweep_key] if is_sweep else [])
+        for key in keys:
+            try:
+                new_val = r.decr(key)
+            except Exception:
+                new_val = None
+            if new_val is not None and int(new_val) < 0:
+                r.set(key, 0)
 
-        # Decrement shots
-        shot_key = f"shots:active:{username}"
-        decrement_amount = (
-            (int(shots_val) * int(circuits_count)) if shots_val and circuits_count else 1
-        )
-        logger.debug("Decrementing shots for %s by %d", username, decrement_amount)
-        new_shots_val = r.decrby(shot_key, decrement_amount)
-        if new_shots_val is not None and int(new_shots_val) < 0:
-            r.set(shot_key, 0)
+        if not is_sweep:
+            decrement_amount = (
+                (int(shots_val) * int(circuits_count)) if shots_val and circuits_count else 1
+            )
+            logger.debug("Decrementing shots for %s by %d", username, decrement_amount)
+            new_shots_val = r.decrby(shot_key, decrement_amount)
+            if new_shots_val is not None and int(new_shots_val) < 0:
+                r.set(shot_key, 0)
     except Exception as e:
-        logger.exception("Redis shots decrement error for %s: %s", username, e)
+        logger.exception("Redis counter decrement error for %s: %s", username, e)
 
 
 # --- Prometheus metrics moved into this module ---

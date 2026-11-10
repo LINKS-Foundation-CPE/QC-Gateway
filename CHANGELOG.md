@@ -19,6 +19,69 @@ on-disk layout of the deploy directory.
 
 ## [Unreleased]
 
+## [2026.11.0] — 2026-11-10
+
+### Changed
+- **Breaking for custom site plugins only:** `SitePlugin.authorize_job` now
+  receives the authenticated `Principal` instead of a bare `username`
+  (`principal.username` is the old value). The SPARK plugin is updated; no
+  configuration changes.
+
+### Added
+- **The `sqed` site plugin** (`SITE_PLUGIN=sqed`), for HPC clusters whose users
+  submit circuits from SLURM batch jobs. Submissions from `sqed` principals are
+  authorized by SLURM admission and skip the portal's `/jobAuthorizer`; other
+  principals are handled exactly as by SPARK. Off unless selected.
+- **A job is attributed to its SLURM `--account`** when the auth plugin knows it
+  (the `sqed` token record carries it): that account becomes the reported
+  project, overriding whatever project the client named. Keycloak principals
+  carry no account, so Lagrange attribution is unchanged.
+- **The HPC-only profile** (`AUTH_PLUGINS=sqed`, `STRICT_PREFIX_MODE=true`,
+  `SITE_PLUGIN=sqed`) is documented and tested.
+
+### Security
+- **The deploy rebuilds on a fresh base image.** It ran `docker compose up
+  --build`, which reuses the host's cached `python:3.11-slim` (and its `apt`
+  layer), so Python and Debian security releases never reached production. It
+  now runs `docker compose build --pull` first, before taking the stack down.
+  Published images are not re-pulled and stay as pinned.
+- **Breaking (`sqed` auth plugin only):** **token records are looked up by the
+  token's SHA-256.** `SqedAuthPlugin` reads `qpu:token:<sha256(token)>`
+  (lowercase hex of the full token, prefix included) instead of
+  `qpu:token:<token>`. The token was the key name, so anyone who could read Redis
+  could enumerate every live token and submit as any running job; a digest
+  cannot be presented. Upgrade the gateway and the SLURM prolog/epilog together,
+  with no licensed job running: records written under the old layout are not
+  found. Deployments that don't enable `sqed` are unaffected.
+- **The image trusts the October 2026 CA roots.** pip, requests and httpx verify
+  TLS against certifi, not the system store, and check no revocation. The
+  image's pip carried a 2023 bundle that still trusted the roots behind the
+  eMudhra intermediates whose private keys turned out to be recoverable
+  (October 2026), including Sectigo's AAA Certificate Services cross-sign path.
+  The build now installs `certifi==2026.10.23` hash-pinned and points pip at it
+  (`PIP_CERT`), and `requirements.txt` requires `certifi>=2026.10.23` at runtime.
+
+### Fixed
+- **The concurrent sweep limit counts sweeps.** `MAX_CONCURRENT_SWEEPS` was
+  checked against the user's count of *all* jobs in flight, so circuit jobs used
+  it up: a user with ten circuit jobs running was refused a sweep with "Max
+  concurrent sweeps reached" while running none. Sweeps now have their own
+  counter, `sweeps:active:<user>`; `jobs:active` still counts every job for the
+  metrics gauge.
+- **A refused submission no longer prolongs a block.** Counters were given a
+  fresh one-hour expiry on every attempt, refused ones included, so a user
+  retrying against a counter left high by an unreleased job stayed blocked for as
+  long as they kept trying. The expiry is now refreshed only when a submission is
+  admitted.
+- **A finished sweep no longer lowers the shot counter**, which it never raised.
+- **The results page shows the right readout fidelity.** It now reads
+  `metrics.ssro.measure_fidelity.constant.*`, the operation every experiment
+  uses by default and the value the IQM server reports, instead of
+  `metrics.ssro.measure.constant.*`, which characterises the `measure`
+  operation used only for mid-circuit measurements (confirmed by IQM, October
+  2026). This reverses the choice made in 2026.08, when IQM's own Perses
+  dashboards plotted `measure`: IQM says that is a known issue on their side.
+
 ## [2026.10.0] — 2026-10-02
 
 ### Added

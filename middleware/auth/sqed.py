@@ -1,14 +1,14 @@
 """Sqed authentication plugin: per-job tokens on a Redis bus.
 
 For deployments where submissions come from a batch scheduler rather than
-from a person. A SLURM SPANK plugin mints a token when a job starts and
-publishes it to Redis; the client submits with that token instead of an OIDC
-one, and this plugin turns it back into an identity.
+from a person. A scheduler hook (the SLURM prolog) mints a token when a job
+starts and publishes its record to Redis; the client submits with that token
+instead of an OIDC one, and this plugin turns it back into an identity.
 
 The record layout, which this plugin only ever **reads** — the ``qpu:*``
 namespace belongs to whatever provisions the tokens:
 
-    key    qpu:token:<token>          (a hash)
+    key    qpu:token:<sha256(token)>  (a hash; lowercase hex, see token_key)
     field  <slurm job id>
     value  JSON: {"uid", "username", "account", "n_licenses",
                   "issued_at", "expires_at"}
@@ -27,6 +27,7 @@ the authority on it, unlike anything the client puts in its own metadata.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -38,6 +39,18 @@ from middleware.plugins.datatypes import Principal
 from middleware.plugins.interfaces import AuthError
 
 logger = logging.getLogger(__name__)
+
+
+def token_key(token: str) -> str:
+    """The Redis key of a token's record: its SHA-256, never the token itself.
+
+    Records are filed under the lowercase hex SHA-256 of the full token string,
+    routing prefix included, so that read access to Redis is not token theft:
+    a digest identifies a record but cannot be presented, because this plugin
+    hashes whatever it is given. The provisioner computes the same digest
+    (test vector in the provisioner's README and in this plugin's tests).
+    """
+    return "qpu:token:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 class SqedAuthPlugin:
@@ -71,7 +84,7 @@ class SqedAuthPlugin:
                 raise AuthError("token backend unavailable", status_code=503)
 
         try:
-            fields = self._redis.hgetall(f"qpu:token:{token}")
+            fields = self._redis.hgetall(token_key(token))
         except Exception as e:
             # 503, not 401: the token may well be valid and we cannot tell.
             # Authentication still fails closed — the request is refused —

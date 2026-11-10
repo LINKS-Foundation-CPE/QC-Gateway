@@ -250,6 +250,16 @@ async def proxy_and_capture(request: Request, call_next):
     # Parse submission details via vendor plugin
     submission = vendor_plugin.parse_submission_request(request_body, path)
 
+    # The project this job is attributed to. `submission.project` is whatever
+    # the client declared in its own submission metadata; an auth source that
+    # knows the accounting entity from the site's own records overrides it,
+    # because the client cannot be trusted to name someone else's project. For
+    # Sqed that record is the SLURM `--account` in the token's Redis record.
+    # `metadata` is a free-form, auth-source-specific bag, so read it defensively.
+    _account = getattr(user, "metadata", None) or {}
+    _account = _account.get("account") if isinstance(_account, dict) else None
+    project_name = _account if isinstance(_account, str) and _account else submission.project
+
     # Determine if this route should be intercepted for logging and authorization
     should_auth_and_log = False
     for log_path, methods in rc.logged_routes.items():
@@ -270,8 +280,8 @@ async def proxy_and_capture(request: Request, call_next):
             }
 
             auth_result = await site_plugin.authorize_job(
-                username=username_val,
-                project_name=submission.project,
+                principal=user,
+                project_name=project_name,
                 extra_headers=auth_headers,
                 timeout=float(settings.UPSTREAM_TIMEOUT),
                 job_type=submission.job_type or None,
@@ -388,7 +398,7 @@ async def proxy_and_capture(request: Request, call_next):
             logger.info("Submitted circuit URL: %s", submitted_circuit_url)
             log_job(
                 jobid=jobid,
-                project_name=submission.project,
+                project_name=project_name,
                 username=username_val,
                 status="submitted",
                 execution_start="",
@@ -411,8 +421,8 @@ async def proxy_and_capture(request: Request, call_next):
                     "submitted_circuit": submitted_circuit_url,
                     "job_type": submission.job_type,
                 }
-                if submission.project is not None:
-                    job_report_payload["project_name"] = submission.project
+                if project_name is not None:
+                    job_report_payload["project_name"] = project_name
                 try:
                     report_result = await site_plugin.send_initial_report(job_report_payload)
                     if not report_result.success:

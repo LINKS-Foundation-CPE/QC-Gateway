@@ -21,6 +21,7 @@ _VENDOR_REGISTRY: dict[str, str] = {
 
 _SITE_REGISTRY: dict[str, str] = {
     "spark": "middleware.sites.spark.plugin.SparkSitePlugin",
+    "sqed": "middleware.sites.sqed.plugin.SqedSitePlugin",
 }
 
 _AUTH_REGISTRY: dict[str, str] = {

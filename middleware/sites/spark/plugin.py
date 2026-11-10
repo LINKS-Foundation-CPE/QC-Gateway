@@ -9,7 +9,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from middleware.plugins.datatypes import JobAuthorizationResult, JobReportResult
+from middleware.plugins.datatypes import (
+    JobAuthorizationResult,
+    JobReportResult,
+    Principal,
+)
 from middleware.sites.spark.authorization import SparkJobAuthorizationChecker
 from middleware.sites.spark.config import SparkSettings
 from middleware.sites.spark.reporting import SparkAsyncReporter, SparkSyncReporter
@@ -33,14 +37,14 @@ class SparkSitePlugin:
 
     async def authorize_job(
         self,
-        username: str,
+        principal: Principal,
         project_name: str | None,
         extra_headers: dict[str, str] | None,
         timeout: float,
         job_type: str | None = None,
     ) -> JobAuthorizationResult:
         return await self._auth_checker.check(
-            username=username,
+            username=principal.username,
             project_name=project_name,
             extra_headers=extra_headers,
             timeout=timeout,

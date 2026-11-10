@@ -775,7 +775,7 @@ function makeCalCard(data) {
   const obs  = data.observations||[];
 
   // The SSRO task whose fidelity is the machine's readout fidelity.
-  const SSRO_TASK = 'measure';
+  const SSRO_TASK = 'measure_fidelity';
 
   const ssro={}, gate={}, t1t2={}, twoQ={};
   obs.forEach(o => {
@@ -828,14 +828,13 @@ function makeCalCard(data) {
     const g=d('cal-grid'); items.forEach(i=>g.appendChild(i)); body.appendChild(g);
   }
 
-  // Readout fidelity is `metrics.ssro.measure.constant.*`, the readout
-  // calibration of the measure gate — the series the Perses dashboards plot
-  // and the one the machine is judged on. A calibration set also carries
-  // `metrics.ssro.measure_fidelity.constant.*` from the separate fidelity
-  // characterisation, whose numbers differ for the same qubit; it is
-  // deliberately not shown. The fallback covers artifacts that carry only the
-  // other task, and names it in the header so it cannot be mistaken for the
-  // canonical one.
+  // Readout fidelity is `metrics.ssro.measure_fidelity.constant.*`: the
+  // operation every experiment uses by default for its measurements, and the
+  // value the IQM server reports (IQM, October 2026). The calibration set also
+  // carries `metrics.ssro.measure.constant.*`, for the `measure` operation,
+  // which is used only for mid-circuit measurements; it is deliberately not
+  // shown. The fallback covers artifacts that carry only the other task, and
+  // names it in the header so it cannot be mistaken for the readout fidelity.
   const ssroTask = ssro[SSRO_TASK] ? SSRO_TASK : Object.keys(ssro).sort()[0];
   if (ssroTask)
     section('Readout fidelity — SSRO' +
