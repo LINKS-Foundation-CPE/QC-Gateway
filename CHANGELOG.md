@@ -19,6 +19,12 @@ on-disk layout of the deploy directory.
 
 ## [Unreleased]
 
+### Changed
+- **The proxy keeps about 20 times more logs.** `fastapi-proxy` rotates at
+  100 MB and keeps 60 files (6 GB of log text, rotated files gzipped) instead of
+  30 x 10 MB, which covered less than a day. Applies when the container is next
+  recreated. Other services are unchanged.
+
 ## [2026.11.0] — 2026-11-10
 
 ### Changed

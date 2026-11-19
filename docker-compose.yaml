@@ -4,6 +4,17 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "30"
 
+# The proxy logs every request, and 30 x 10 MB covered less than a day of
+# traffic: too little to look back at an incident. 60 x 100 MB keeps about
+# 20 times as much (6 GB of log text). Rotated files are gzipped, so the disk
+# cost is a fraction of that; `docker logs` reads them transparently.
+x-proxy-logging: &proxy-logging
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "60"
+    compress: "true"
+
 services:
   reporter:
     build: .
@@ -140,7 +151,7 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    logging: *default-logging
+    logging: *proxy-logging
     labels:
       - "loki.job=fastapi-proxy"
 
